@@ -1,0 +1,42 @@
+pytesseract
+opencv-python
+Pillow
+numpy<2.0
+
+# Alternative OCR (optionnel, à décommenter si nécessaire)
+# easyocr==1.7.0
+# google-cloud-vision==3.4.4
+
+# Interface utilisateur
+streamlit==1.28.1
+streamlit-cropper==0.2.1
+
+# Utilitaires
+pdf2image==1.16.3  # Pour traiter les PDFs
+python-magic==0.4.27  # Détection de type de fichier
+
+# Matching et parsing
+fuzzywuzzy==0.18.0
+python-Levenshtein==0.23.0
+
+# Validation
+pydantic>=2.5.0
+
+# Pour les graphiques de confiance (optionnel)
+plotly==5.18.0
+
+# === Tests ===
+pytest>=7.4.0
+
+# === Claude Vision API (Phase 1) ===
+anthropic>=0.39.0
+
+# === PDF handling (Windows-compatible, pas besoin de poppler) ===
+PyMuPDF>=1.23.0
+
+# === ML Training (Phase 2-3, installer quand necessaire) ===
+# torch>=2.1.0
+# transformers>=4.36.0
+# datasets>=2.16.0
+# scikit-learn>=1.3.0
+# accelerate>=0.25.0

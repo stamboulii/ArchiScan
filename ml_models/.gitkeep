@@ -1,0 +1,6 @@
+# =============================================================================
+# Ce repertoire contient les modeles ML entraines
+# =============================================================================
+# Les fichiers .pt/.bin des modeles sont ignores par .gitignore
+# pour eviter de commit de gros fichiers binaire
+# =============================================================================

@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python test_extractor.py:*)",
+      "Bash(pip install:*)",
+      "Bash(where tesseract)",
+      "Bash(pip show streamlit)",
+      "Bash(dir:*)",
+      "Bash(python -c:*)",
+      "Bash(python -m py_compile:*)",
+      "Bash(python -m pytest:*)"
+    ]
+  }
+}

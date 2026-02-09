@@ -1,0 +1,277 @@
+# =============================================================================
+# GitIgnore pour ArchiExtract
+# =============================================================================
+# Fichier genere automatiquement - NE PAS MODIFIER A MOINS DE SAVOIR CE QUE VOUS FAITES
+# =============================================================================
+
+# =============================================================================
+# Fichiers Sensibles - PRIORITE HAUTE
+# =============================================================================
+
+# Variables d'environnement (contient les cles API!)
+.env
+.env.local
+.env.*.local
+
+# Base de donnees SQLite (donnees d'entrainement)
+*.db
+*.sqlite
+*.sqlite3
+
+# Fichiers de configuration personnelle
+*.secrets
+*.credentials
+
+# =============================================================================
+# Python
+# =============================================================================
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+
+# Translations
+*.mo
+*.pot
+
+# Django stuff:
+*.log
+local_settings.py
+db.sqlite3
+db.sqlite3-journal
+
+# Flask stuff:
+instance/
+.webassets-cache
+
+# Scrapy stuff:
+.scrapy
+
+# Sphinx documentation
+docs/_build/
+
+# PyBuilder
+.target/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# IPython
+profile_default/
+ipython_config.py
+
+# pyenv
+.python-version
+
+# pipenv
+Pipfile.lock
+
+# PEP 582
+__pypackages__/
+
+# Celery stuff
+celerybeat-schedule
+celerybeat.pid
+
+# SageMath parsed files
+*.sage.py
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Spyder project settings
+.spyderproject
+.spyproject
+
+# Rope project settings
+.ropeproject
+
+# mkdocs documentation
+/site
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre type checker
+.pyre/
+
+# =============================================================================
+# IDEs and Editors
+# =============================================================================
+
+# VS Code
+.vscode/
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+*.code-workspace
+
+# JetBrains
+.idea/
+*.iml
+.ipr
+.iws
+.idea_modules/
+
+# Emacs
+*~
+\#*\#
+.\#*
+
+# Vim
+[._]*.s[a-v][a-z]
+[._]*.sw[a-p]
+[._]s[a-rt-v][a-z]
+[._]ss[a-gi-z]
+[._]sw[a-k-z]
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Thumbnails
+._*
+
+# Files that might appear in the root of a volume
+.DocumentRevisions-V100-
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.volumeicon.icns
+.com.apple.timemachine.donotpresent
+
+# Directories potentially created on remote AFP share
+.AppleDB
+.AppleDesktop
+Network Trash Folder
+Temporary Items
+.apdisk
+
+# =============================================================================
+# Project Specific
+# =============================================================================
+
+# Repertoires de donnees dynamiques
+debug_output/*
+!debug_output/.gitkeep
+
+ml_models/*
+!ml_models/.gitkeep
+
+training_images/*
+!training_images/.gitkeep
+
+training_data/*
+!training_data/.gitkeep
+
+# Fichiers de test locaux
+test_output*.json
+*.log
+
+# Fichiers temporaires
+*.tmp
+*.temp
+temp/
+tmp/
+
+# Images de debug
+preprocessed_debug.*
+extracted_text_debug.*
+
+# Fichiers de sortie utilisateur
+*.output
+*.export
+
+# Cache Streamlit
+.streamlit/config.toml
+
+# Fichiers de session
+*.session
+
+# =============================================================================
+# Archives
+# =============================================================================
+
+*.7z
+*.tar
+*.gz
+*.rar
+*.zip
+*.bz2
+*.xz
+
+# =============================================================================
+# Secrets Detection - Outils de securite
+# =============================================================================
+
+# TruffleHog (detection de secrets)
+.truffleHog/
+
+# Gitleaks
+.gitleaks.toml
+.gitleaks.sarif
+
+# =============================================================================
+# Licence et Documentation
+# =============================================================================
+
+# Si vous avez des fichiers de licence payants
+*.lic
