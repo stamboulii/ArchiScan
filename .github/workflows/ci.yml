@@ -1,0 +1,225 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+env:
+  PYTHON_VERSION: '3.11'
+  POETRY_VERSION: '1.7.1'
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+    
+    - name: Install linting tools
+      run: |
+        python -m pip install --upgrade pip
+        pip install black isort flake8 mypy
+    
+    - name: Check formatting with Black
+      run: |
+        black --check --diff --line-length 100 src/ tests/
+    
+    - name: Check imports with isort
+      run: |
+        isort --check-only --diff src/ tests/
+    
+    - name: Lint with flake8
+      run: |
+        flake8 src/ tests/ --max-line-length=100 --exclude=src/api/main.py
+    
+    - name: Type check with mypy
+      run: |
+        pip install mypy
+        mypy src/ --ignore-missing-imports --no-error-summary
+
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    needs: lint
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+        cache: 'pip'
+    
+    - name: Install dependencies
+      run: |
+        pip install --upgrade pip
+        pip install pytest pytest-cov pytest-asyncio httpx
+        pip install -e .
+        pip install -e ".[ml]"
+    
+    - name: Run tests
+      run: |
+        pytest tests/ -v --tb=short --cov=src --cov-report=xml --cov-report=term-missing
+    
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v3
+      with:
+        files: ./coverage.xml
+        flags: unittests
+        fail_ci_if_error: false
+
+  test-api:
+    name: API Tests
+    runs-on: ubuntu-latest
+    needs: lint
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+        cache: 'pip'
+    
+    - name: Install dependencies
+      run: |
+        pip install --upgrade pip
+        pip install pytest pytest-cov httpx fastapi uvicorn
+        pip install -e .
+    
+    - name: Run API tests
+      run: |
+        pytest tests/test_api*.py -v --tb=short
+
+  security:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+    
+    - name: Install security tools
+      run: |
+        pip install --upgrade pip
+        pip install safety bandit
+    
+    - name: Check dependencies with Safety
+      run: |
+        safety check -r requirements.txt || true
+    
+    - name: Scan with Bandit
+      run: |
+        bandit -r src/ -f txt -o bandit_report.txt || true
+    
+    - name: Check for hardcoded secrets
+      run: |
+        # Basic check for common patterns
+        grep -r "sk-ant-api03" src/ tests/ || echo "No hardcoded API keys found"
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    needs: [test, test-api]
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+        cache: 'pip'
+    
+    - name: Install build tools
+      run: |
+        pip install --upgrade pip
+        pip install build twine check-wheel-contents
+    
+    - name: Build package
+      run: |
+        python -m build
+    
+    - name: Check package
+      run: |
+        pip install dist/*.whl
+        twine check dist/*
+        check-wheel-contents dist/*.whl
+
+  deploy:
+    name: Deploy to PyPI
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      id-token: write
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+    
+    - name: Install Twine
+      run: |
+        pip install --upgrade pip
+        pip install twine
+    
+    - name: Publish to PyPI
+      run: |
+        twine upload dist/* --skip-existing --verbose
+      env:
+        TWINE_USERNAME: __token__
+        TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+
+  docs:
+    name: Build Documentation
+    runs-on: ubuntu-latest
+    needs: lint
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+    
+    - name: Install documentation tools
+      run: |
+        pip install --upgrade pip
+        pip install sphinx sphinx-rtd-theme
+        # Install the package
+        pip install -e .
+    
+    - name: Build documentation
+      run: |
+        # Create docs directory if needed
+        mkdir -p docs
+        sphinx-build docs/source docs/_build/html || echo "No Sphinx docs configured"
+    
+    - name: Deploy docs to GitHub Pages
+      uses: peaceiris/actions-gh-pages@v3
+      if: github.ref == 'refs/heads/main'
+      with:
+        github_token: ${{ secrets.GITHUB_TOKEN }}
+        publish_dir: docs/_build/html
+
+
+

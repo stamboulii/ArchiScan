@@ -10,6 +10,7 @@ import logging
 from typing import Dict, List, Optional
 
 from extraction_cache import ExtractionCache
+from extraction_logger import get_logger, log_extraction_start, log_extraction_end, log_method_attempt, log_fallback
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +65,14 @@ class HybridExtractor:
             from architecture_plan_extractor import ArchitecturePlanExtractor
             self._tesseract = ArchitecturePlanExtractor()
         return self._tesseract
+    
+    @tesseract_extractor.setter
+    def tesseract_extractor(self, value):
+        self._tesseract = value
+    
+    @tesseract_extractor.deleter
+    def tesseract_extractor(self):
+        self._tesseract = None
 
     @property
     def claude_extractor(self):
@@ -71,6 +80,14 @@ class HybridExtractor:
             from claude_vision_extractor import ClaudeVisionExtractor
             self._claude = ClaudeVisionExtractor(api_key=self._api_key)
         return self._claude
+    
+    @claude_extractor.setter
+    def claude_extractor(self, value):
+        self._claude = value
+    
+    @claude_extractor.deleter
+    def claude_extractor(self):
+        self._claude = None
 
     @property
     def ml_extractor(self):
@@ -78,6 +95,14 @@ class HybridExtractor:
             from ml_trainer import MLExtractor
             self._ml = MLExtractor()
         return self._ml
+    
+    @ml_extractor.setter
+    def ml_extractor(self, value):
+        self._ml = value
+    
+    @ml_extractor.deleter
+    def ml_extractor(self):
+        self._ml = None
 
     @property
     def data_store(self):
@@ -85,6 +110,14 @@ class HybridExtractor:
             from training_data_store import TrainingDataStore
             self._store = TrainingDataStore()
         return self._store
+    
+    @data_store.setter
+    def data_store(self, value):
+        self._store = value
+    
+    @data_store.deleter
+    def data_store(self):
+        self._store = None
 
     def get_current_phase(self) -> int:
         """
@@ -193,28 +226,65 @@ class HybridExtractor:
         Methode d'extraction principale. Route vers l'extracteur
         approprie selon la phase actuelle.
 
-        Interface compatible avec ArchitecturePlanExtractor.
+        Pour les PDFs multi-pages, extraire tous les lots de toutes les pages.
 
         Args:
-            image_path: Chemin vers l'image du plan
+            image_path: Chemin vers l'image ou PDF du plan
             save_preprocessed: Sauvegarder l'image preprocessee (compatibilite)
             use_cache: Si True, utilise le cache en memoire pour eviter
                       le retraitement d'images deja extraites
         """
+        # Log le début de l'extraction
+        log_extraction_start(image_path, self._determine_method())
+        
         method = self._determine_method()
         phase = self.get_current_phase()
         logger.info(f"Extraction avec methode: {method} (Phase {phase})")
 
         # Gerer l'entree PDF
-        actual_image_path = image_path
-        if image_path.lower().endswith('.pdf'):
-            from claude_vision_extractor import convert_pdf_to_images
-            page_images = convert_pdf_to_images(image_path)
-            if not page_images:
-                raise ValueError(f"Impossible d'extraire les pages du PDF: {image_path}")
-            actual_image_path = page_images[0]
+        is_pdf = image_path.lower().endswith('.pdf')
+        if is_pdf:
+            # Pour Claude: PDF directement supporte
+            # Pour Tesseract: necessite conversion
+            if method == 'claude':
+                # Claude peut traiter le PDF directement
+                actual_image_path = image_path
+                logger.info(f"Extraction PDF directement avec Claude")
+            else:
+                # Tesseract necessite conversion
+                from claude_vision_extractor import convert_pdf_to_images
+                page_images = convert_pdf_to_images(image_path)
+                if not page_images:
+                    error = f"Impossible d'extraire les pages du PDF: {image_path}"
+                    log_extraction_end(success=False, error=error)
+                    raise ValueError(error)
+                
+                # Pour PDFs multi-pages, extraire tous les lots
+                if len(page_images) > 1:
+                    logger.info(f"PDF detecte avec {len(page_images)} pages - extraction multi-pages")
+                    all_results = self._extract_all_pages(page_images, method)
+                    
+                    for page_result in all_results:
+                        try:
+                            extraction_id = self.data_store.save_extraction(
+                                image_path=page_result.get('_image_path', image_path),
+                                extracted_data=page_result,
+                                method=page_result.get('_extraction_meta', {}).get('method', method),
+                                confidence=page_result.get('_extraction_meta', {}).get('confidence'),
+                            )
+                            page_result['_extraction_id'] = extraction_id
+                        except Exception as e:
+                            logger.warning(f"Echec de sauvegarde: {e}")
+                    
+                    combined_result = self._combine_page_results(all_results)
+                    log_extraction_end(success=True)
+                    return combined_result
+                else:
+                    actual_image_path = page_images[0]
+        else:
+            actual_image_path = image_path
 
-        # Verifier le cache
+        # Verifier le cache (pour mono-page)
         if use_cache and self._cache is not None:
             cached_result = self._cache.get(actual_image_path)
             if cached_result is not None:
@@ -230,8 +300,18 @@ class HybridExtractor:
                 result = self.claude_extractor.extract_from_image(actual_image_path)
             else:
                 result = self.tesseract_extractor.extract_from_image(actual_image_path)
+            
+            # Log la tentative réussie
+            log_method_attempt(method, True, result_keys=list(result.keys()) if result else [])
+            
         except Exception as e:
+            # Log la tentative échouée
+            log_method_attempt(method, False, error=str(e))
             logger.warning(f"Methode primaire '{method}' echouee: {e}")
+            
+            # Log le fallback
+            log_fallback(method, 'fallback', str(e))
+            
             result = self._fallback_extract(actual_image_path, failed_method=method)
 
         # Sauvegarder dans le data store
@@ -260,8 +340,93 @@ class HybridExtractor:
         # Stocker dans le cache
         if self._cache is not None:
             self._cache.put(actual_image_path, result)
-
+        
+        # Log la fin de l'extraction
+        log_extraction_end(success=True, extraction_id=extraction_id)
+        
         return result
+    
+    def _extract_all_pages(self, page_images: list, method: str) -> list:
+        """Extraction de tous les lots de toutes les pages."""
+        all_results = []
+        
+        for i, page_path in enumerate(page_images):
+            logger.info(f"Extraction page {i+1}/{len(page_images)}: {page_path}")
+            try:
+                if method == 'claude':
+                    result = self.claude_extractor.extract_from_image(page_path)
+                elif method == 'ml':
+                    result = self._extract_with_ml_fallback(page_path)
+                else:
+                    result = self.tesseract_extractor.extract_from_image(page_path)
+                
+                result['_image_path'] = page_path
+                result['_page_number'] = i + 1
+                all_results.append(result)
+                
+            except Exception as e:
+                logger.warning(f"Echec extraction page {i+1}: {e}")
+                all_results.append({
+                    'error': str(e),
+                    '_image_path': page_path,
+                    '_page_number': i + 1
+                })
+        
+        return all_results
+    
+    def _combine_page_results(self, page_results: list) -> dict:
+        """Combine les resultats de plusieurs pages en un seul resultat."""
+        combined = {
+            'parcels': [],
+            'all_parcels': {},
+            '_extraction_meta': {
+                'method': 'multi-page',
+                'confidence': 0.0,
+                'total_pages': len(page_results),
+                'successful_pages': 0
+            },
+            '_page_results': page_results
+        }
+        
+        total_confidence = 0.0
+        
+        for result in page_results:
+            if 'error' in result:
+                continue
+            
+            combined['_extraction_meta']['successful_pages'] += 1
+            
+            # Ajouter les lots
+            parcels = result.get('parcels', [])
+            if not parcels and result.get('parcelLabel'):
+                # Format mono-lot
+                parcels = [result]
+            
+            for parcel in parcels:
+                label = parcel.get('parcelLabel', 'UNKNOWN')
+                combined['parcels'].append(parcel)
+                combined['all_parcels'][label] = parcel
+            
+            # Moyenne des confiance
+            conf = result.get('_extraction_meta', {}).get('confidence', 0)
+            if conf > 0:
+                total_confidence += conf
+        
+        # Calculer la confiance moyenne
+        successful = combined['_extraction_meta']['successful_pages']
+        if successful > 0:
+            combined['_extraction_meta']['confidence'] = total_confidence / successful
+        
+        # Copier les donnees du premier lot
+        if page_results and 'parcelLabel' not in combined:
+            first = page_results[0]
+            for key in ['parcelLabel', 'typology', 'floor', 'orientation', 
+                       'living_space', 'price', 'surfaceDetail', 'option', 
+                       'tva', 'pinel', 'state']:
+                if key in first:
+                    combined[key] = first[key]
+        
+        return combined
 
     def _extract_with_ml_fallback(self, image_path: str) -> Dict:
         """
@@ -300,47 +465,73 @@ class HybridExtractor:
                 continue
             try:
                 if method == 'claude' and self.claude_extractor.is_available():
+                    log_method_attempt(method, True)
                     return self.claude_extractor.extract_from_image(image_path)
                 elif method == 'tesseract':
-                    return self.tesseract_extractor.extract_from_image(image_path)
+                    result = self.tesseract_extractor.extract_from_image(image_path)
+                    log_method_attempt(method, True, result_keys=list(result.keys()) if result else [])
+                    return result
             except Exception as e:
                 logger.warning(f"Methode fallback '{method}' aussi echouee: {e}")
+                log_method_attempt(method, False, error=str(e))
 
+        log_extraction_end(success=False, error="Toutes les methodes ont echoue")
         raise RuntimeError("Toutes les methodes d'extraction ont echoue")
 
     def extract_all_parcels(self, image_path: str) -> List[Dict]:
         """
-        Extrait tous les lots d'une image (multi-lots).
-        Disponible uniquement avec Claude Vision.
+        Extrait tous les lots d'une image ou PDF (multi-lots, multi-pages).
+        Pour PDFs, extrait tous les lots de toutes les pages.
         """
         # Gerer l'entree PDF
-        actual_image_path = image_path
-        if image_path.lower().endswith('.pdf'):
+        is_pdf = image_path.lower().endswith('.pdf')
+        page_images = []
+        if is_pdf:
             from claude_vision_extractor import convert_pdf_to_images
             page_images = convert_pdf_to_images(image_path)
             if not page_images:
                 raise ValueError(f"Impossible d'extraire les pages du PDF: {image_path}")
-            actual_image_path = page_images[0]
 
         if self.claude_extractor.is_available():
-            results = self.claude_extractor.extract_all_parcels(actual_image_path)
+            all_results = []
+            
+            # PDFs multi-pages: traiter toutes les pages
+            if is_pdf and len(page_images) > 1:
+                for i, page_path in enumerate(page_images):
+                    logger.info(f"extract_all_parcels: page {i+1}/{len(page_images)}")
+                    try:
+                        results = self.claude_extractor.extract_all_parcels(page_path)
+                        for r in results:
+                            r['_page_number'] = i + 1
+                        all_results.extend(results)
+                    except Exception as e:
+                        logger.warning(f"Echec extraction page {i+1}: {e}")
+            else:
+                # Image ou PDF mono-page
+                actual = page_images[0] if page_images else image_path
+                all_results = self.claude_extractor.extract_all_parcels(actual)
+            
             # Sauvegarder chaque lot
-            for result in results:
+            for result in all_results:
                 try:
                     meta = result.get('_extraction_meta', {})
                     self.data_store.save_extraction(
-                        image_path=actual_image_path,
+                        image_path=result.get('_image_path', image_path),
                         extracted_data=result,
                         method=meta.get('method', 'claude'),
                         confidence=meta.get('confidence'),
                     )
                 except Exception as e:
                     logger.warning(f"Echec sauvegarde lot: {e}")
-            return results
+            
+            return all_results
+        
+        # Fallback: un seul lot via Tesseract
+        if page_images:
+            result = self.tesseract_extractor.extract_from_image(page_images[0])
         else:
-            # Fallback: un seul lot via Tesseract
-            result = self.tesseract_extractor.extract_from_image(actual_image_path)
-            return [result]
+            result = self.tesseract_extractor.extract_from_image(image_path)
+        return [result]
 
     def extract_batch(self, image_paths: List[str]) -> Dict[str, Dict]:
         """

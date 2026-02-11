@@ -1,0 +1,25 @@
+# =============================================================================
+# ArchiExtract - Dependencies ML (Optionnel)
+# =============================================================================
+# Installe uniquement les dependances pour l'entrainement ML (Phase 2-3)
+# Installation: pip install -r requirements-ml.txt
+# =============================================================================
+
+# Core ML Framework
+torch>=2.1.0
+torchvision>=0.16.0  # Pour le traitement d'images
+
+# Transformers pour Donut (document understanding)
+transformers>=4.36.0
+
+# Datasets pour la gestion des donnees d'entrainement
+datasets>=2.16.0
+
+# Scikit-learn pour les metriques et utilitaires ML
+scikit-learn>=1.3.0
+
+# Accelerate pour l'entrainement distribue
+accelerate>=0.25.0
+
+# Optuna pour l'optimisation des hyperparametres (optionnel)
+optuna>=3.5.0

@@ -13,7 +13,8 @@ Point d'entree principal - delegue aux modules UI:
 
 import streamlit as st
 
-from hybrid_extractor import HybridExtractor
+# Imports depuis la nouvelle structure src/
+from src.extractors.hybrid_extractor import HybridExtractor
 from training_data_store import TrainingDataStore
 
 from ui.styles import apply_custom_styles
@@ -25,9 +26,12 @@ from ui.training_dashboard import render_training_dashboard
 # Configuration de la page
 st.set_page_config(
     page_title="ArchiExtract - Hybrid",
-    page_icon="\U0001f3d7\ufe0f",
+    page_icon="🏗️",
     layout="wide"
 )
+
+# NOTE: Pour augmenter la limite d'upload (200MB par défaut),
+# utilisez: streamlit run streamlit_app.py --server.maxUploadSize 2048
 
 
 def initialize_session_state():

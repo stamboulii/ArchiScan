@@ -101,13 +101,13 @@ class TestNormalizeParcelData:
         result = normalize_parcel_data({'price': ''})
         assert result['price'] == 'N.C'
 
-        # None -> str(None) = 'None' qui est truthy, donc pas de fallback
+        # None -> 'N.C' car None est falsy
         result = normalize_parcel_data({'price': None})
-        assert result['price'] == 'None'
+        assert result['price'] == 'N.C'
 
-        # 0 -> str(0) = '0' qui est truthy
+        # 0 -> 'N.C' car 0 est falsy
         result = normalize_parcel_data({'price': 0})
-        assert result['price'] == '0'
+        assert result['price'] == 'N.C'
 
         # Pas de prix -> default 'N.C'
         result = normalize_parcel_data({})

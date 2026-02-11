@@ -10,12 +10,14 @@ METHOD_COLORS = {
     'claude': '#4285f4',
     'tesseract': '#ff9800',
     'ml': '#4caf50',
+    'pymupdf': '#9c27b0',
 }
 
 METHOD_LABELS = {
     'claude': 'Claude Vision',
     'tesseract': 'Tesseract OCR',
     'ml': 'ML Custom',
+    'pymupdf': 'PyMuPDF',
 }
 
 PHASE_ICONS = {
@@ -23,6 +25,7 @@ PHASE_ICONS = {
     1: '\U0001f535',  # blue circle
     2: '\U0001f7e3',  # purple circle
     3: '\U0001f7e2',  # green circle
+    4: '\U0001f52c',  # crystal ball (purple)
 }
 
 
@@ -48,9 +51,11 @@ def apply_custom_styles():
         .phase-1 { background-color: #4285f4; color: white; }
         .phase-2 { background-color: #9c27b0; color: white; }
         .phase-3 { background-color: #4caf50; color: white; }
+        .phase-4 { background-color: #9c27b0; color: white; }
         .method-claude { color: #4285f4; font-weight: bold; }
         .method-tesseract { color: #ff9800; font-weight: bold; }
         .method-ml { color: #4caf50; font-weight: bold; }
+        .method-pymupdf { color: #9c27b0; font-weight: bold; }
         .success-box {
             padding: 1rem;
             border-radius: 0.5rem;

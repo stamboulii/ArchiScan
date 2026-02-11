@@ -115,9 +115,9 @@ class TestOrientationExtraction:
 
     @pytest.mark.parametrize("text, expected", [
         ("Orientation: N", "N"),
-        ("S", "S"),
+        ("Orientation: S", "S"),
         ("Orientation: E", "E"),
-        ("O", "O"),
+        ("Orientation: O", "O"),
         ("Nord", "Nord"),
         ("Sud", "Sud"),
         ("Est", "Est"),

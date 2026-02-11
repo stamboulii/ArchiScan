@@ -36,11 +36,10 @@ class TestGetCurrentPhase:
                    new_callable=PropertyMock) as mock_ml, \
              patch('hybrid_extractor.HybridExtractor.claude_extractor',
                    new_callable=PropertyMock) as mock_claude, \
-             patch('hybrid_extractor.HybridExtractor.data_store',
-                   new_callable=PropertyMock) as mock_store:
+             patch('training_data_store.TrainingDataStore.get_statistics') as mock_stats:
             mock_ml.side_effect = Exception("No ML")
             mock_claude.return_value = MagicMock(is_available=MagicMock(return_value=False))
-            mock_store.side_effect = Exception("No store")
+            mock_stats.return_value = {'ready_for_training': False, 'total_samples': 0}
 
             ext = HybridExtractor()
             assert ext.get_current_phase() == 0
@@ -99,8 +98,8 @@ class TestGetPhaseDescription:
         from hybrid_extractor import HybridExtractor
         ext = HybridExtractor(force_method=force_method)
 
-        with patch.object(ext, 'data_store', new_callable=PropertyMock) as mock:
-            mock.side_effect = Exception("No store")
+        with patch('training_data_store.TrainingDataStore.get_statistics') as mock_stats:
+            mock_stats.side_effect = Exception("No store")
             desc = ext.get_phase_description()
 
         assert desc['phase'] == expected_phase
@@ -123,7 +122,7 @@ class TestFallbackExtract:
 
         mock_result = {'parcelLabel': 'TEST', '_extraction_meta': {'method': 'tesseract'}}
 
-        with patch.object(ext, 'tesseract_extractor') as mock_tess:
+        with patch.object(ext, 'tesseract_extractor', new_callable=PropertyMock) as mock_tess:
             mock_tess.extract_from_image.return_value = mock_result
             result = ext._fallback_extract('/fake/path.png', failed_method='claude')
 
@@ -135,7 +134,7 @@ class TestFallbackExtract:
 
         mock_result = {'parcelLabel': 'TEST', '_extraction_meta': {'method': 'claude'}}
 
-        with patch.object(ext, 'claude_extractor') as mock_claude:
+        with patch.object(ext, 'claude_extractor', new_callable=PropertyMock) as mock_claude:
             mock_claude.is_available.return_value = True
             mock_claude.extract_from_image.return_value = mock_result
             result = ext._fallback_extract('/fake/path.png', failed_method='tesseract')
@@ -146,8 +145,8 @@ class TestFallbackExtract:
         from hybrid_extractor import HybridExtractor
         ext = HybridExtractor()
 
-        with patch.object(ext, 'claude_extractor') as mock_claude, \
-             patch.object(ext, 'tesseract_extractor') as mock_tess:
+        with patch.object(ext, 'claude_extractor', new_callable=PropertyMock) as mock_claude, \
+             patch.object(ext, 'tesseract_extractor', new_callable=PropertyMock) as mock_tess:
             mock_claude.is_available.return_value = False
             mock_tess.extract_from_image.side_effect = Exception("OCR failed")
 

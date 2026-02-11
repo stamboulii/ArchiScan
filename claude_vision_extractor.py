@@ -13,8 +13,9 @@ from typing import Dict, List, Optional
 from dataclasses import asdict
 
 from config import (
-    CLAUDE_API_KEY, CLAUDE_MODEL, CLAUDE_MAX_TOKENS,
-    TEMP_DIR, ensure_directories
+    CLAUDE_MODEL, CLAUDE_MAX_TOKENS,
+    TEMP_DIR, ensure_directories,
+    get_secrets_manager
 )
 
 logger = logging.getLogger(__name__)
@@ -25,53 +26,84 @@ RETRY_BASE_DELAY = 1.0  # secondes
 RETRY_MAX_DELAY = 30.0  # secondes
 
 
-def convert_pdf_to_images(pdf_path: str, dpi: int = 200) -> List[str]:
+def convert_pdf_to_images(pdf_path: str, dpi: int = 150) -> List[str]:
     """
     Convertit un fichier PDF en images individuelles par page.
-    Utilise PyMuPDF (fitz) pour compatibilite Windows (pas besoin de poppler).
+    Utilise PyMuPDF (fitz) avec compression pour reduire la taille.
 
     Args:
         pdf_path: Chemin vers le fichier PDF
-        dpi: Resolution en DPI pour le rendu
+        dpi: Resolution en DPI pour le rendu (150 par defaut pour taille reduite)
 
     Returns:
         Liste des chemins vers les images generees
     """
+    import traceback
+    
     try:
         import fitz  # PyMuPDF
     except ImportError:
         logger.error("PyMuPDF (fitz) n'est pas installe. Installez-le avec: pip install PyMuPDF")
         return []
 
+    # Verifier le chemin
+    logger.info(f"Tentative d'ouverture du PDF: {pdf_path}")
+    
     if not Path(pdf_path).exists():
         logger.error(f"Fichier PDF introuvable: {pdf_path}")
-        return []
+        abs_path = Path(pdf_path).resolve()
+        logger.info(f"Essai avec chemin absolu: {abs_path}")
+        if abs_path.exists():
+            pdf_path = str(abs_path)
+        else:
+            logger.error(f"Fichier PDF non trouve meme avec le chemin absolu")
+            return []
+
+    # Verifier la taille du fichier
+    file_size = Path(pdf_path).stat().st_size
+    logger.info(f"Taille du PDF: {file_size / (1024*1024):.2f} MB")
 
     ensure_directories()
     doc = None
     image_paths = []
 
     try:
+        logger.info(f"Ouverture du PDF avec PyMuPDF...")
         doc = fitz.open(pdf_path)
+        logger.info(f"PDF ouvert: {len(doc)} pages")
 
         for page_num in range(len(doc)):
-            page = doc.load_page(page_num)
-            zoom = dpi / 72.0
-            mat = fitz.Matrix(zoom, zoom)
-            pix = page.get_pixmap(matrix=mat)
+            try:
+                page = doc.load_page(page_num)
+                zoom = dpi / 72.0
+                mat = fitz.Matrix(zoom, zoom)
+                pix = page.get_pixmap(matrix=mat)
 
-            output_path = TEMP_DIR / f"pdf_page_{page_num + 1}.png"
-            pix.save(str(output_path))
-            image_paths.append(str(output_path))
-            logger.info(f"PDF page {page_num + 1} -> {output_path}")
+                # Utiliser JPEG avec compression
+                output_path = TEMP_DIR / f"pdf_page_{page_num + 1}.jpg"
+                pix.save(str(output_path), jpegquality=85)
+                
+                file_size_kb = output_path.stat().st_size / 1024
+                logger.info(f"Page {page_num + 1} generee: {file_size_kb:.1f} KB")
+                
+                image_paths.append(str(output_path))
+            except Exception as page_error:
+                logger.error(f"Erreur page {page_num + 1}: {page_error}")
+                continue
 
     except Exception as e:
-        logger.error(f"Erreur lors de la conversion PDF '{pdf_path}': {e}")
+        logger.error(f"Erreur lors de la conversion PDF '{pdf_path}': {type(e).__name__}: {e}")
+        logger.error(traceback.format_exc())
         return []
     finally:
         if doc:
             doc.close()
 
+    if not image_paths:
+        logger.error(f"Aucune page n'a pu etre extraite du PDF")
+    else:
+        logger.info(f"Conversion terminee: {len(image_paths)} pages")
+    
     return image_paths
 
 
@@ -84,13 +116,21 @@ class ClaudeVisionExtractor:
     def __init__(self, api_key: str = None, model: str = None):
         """
         Args:
-            api_key: Cle API Anthropic. Si None, lit depuis config/env.
+            api_key: Cle API Anthropic. Si None, lit depuis SecretsManager securise.
             model: Identifiant du modele Claude. Par defaut depuis config.
         """
-        self.api_key = api_key or CLAUDE_API_KEY
+        self._api_key_override = api_key  # Pour compatibilite retour
         self.model = model or CLAUDE_MODEL
         self.max_tokens = CLAUDE_MAX_TOKENS
         self._client = None
+        self._secrets = get_secrets_manager()
+    
+    @property
+    def api_key(self) -> str:
+        """Recupere la cle API (depuis SecretsManager ou override)."""
+        if self._api_key_override:
+            return self._api_key_override
+        return self._secrets.get_claude_api_key()
 
     @property
     def client(self):
@@ -176,18 +216,37 @@ class ClaudeVisionExtractor:
         )
 
     def is_available(self) -> bool:
-        """Verifie si Claude Vision est disponible (cle API definie)."""
-        return bool(self.api_key)
+        """Verifie si Claude Vision est disponible (cle UI ou SecretsManager)."""
+        # Priorite a la cle saisie dans l'UI
+        if self._api_key_override:
+            return True
+        
+        # Sinon, verifier SecretsManager
+        try:
+            self._secrets.validate_all_secrets('claude')
+            return True
+        except ValueError:
+            return False
 
     def _encode_image(self, image_path: str) -> tuple:
         """
-        Lit et encode en base64 un fichier image.
+        Lit et encode en base64 un fichier image ou PDF.
+        Compresse automatiquement si necessaire pour respecter la limite Claude API (5MB).
+
+        Args:
+            image_path: Chemin vers l'image ou le PDF
 
         Returns:
             (base64_data, media_type)
         """
         path = Path(image_path)
         suffix = path.suffix.lower()
+        
+        # Verifier si c'est un PDF
+        if suffix == '.pdf':
+            return self._encode_pdf(image_path)
+        
+        # Pour les images
         media_type_map = {
             '.png': 'image/png',
             '.jpg': 'image/jpeg',
@@ -198,42 +257,124 @@ class ClaudeVisionExtractor:
         }
         media_type = media_type_map.get(suffix, 'image/png')
 
-        if not Path(image_path).exists():
-            raise FileNotFoundError(f"Image introuvable: {image_path}")
+        if not path.exists():
+            raise FileNotFoundError(f"Fichier introuvable: {image_path}")
 
         with open(image_path, 'rb') as f:
             raw_data = f.read()
 
-        if len(raw_data) == 0:
-            raise ValueError(f"Fichier image vide: {image_path}")
+        file_size = len(raw_data)
+        logger.info(f"Taille fichier: {file_size / (1024*1024):.2f} MB")
 
-        # Redimensionner si l'image est trop grande (>20MB)
-        if len(raw_data) > 20 * 1024 * 1024:
+        if file_size == 0:
+            raise ValueError(f"Fichier vide: {image_path}")
+
+        # Compresser si l'image est trop grande (> 2MB)
+        max_size = 5 * 1024 * 1024  # 5MB limite Claude API
+
+        if file_size > 2 * 1024 * 1024:
+            logger.warning(f"Fichier trop grand ({file_size / (1024*1024):.2f}MB), compression necessaire")
+
             try:
                 from PIL import Image as PILImage
                 import io
                 img = PILImage.open(image_path)
 
                 if img.width == 0 or img.height == 0:
-                    raise ValueError(f"Dimensions d'image invalides: {img.width}x{img.height}")
+                    raise ValueError(f"Dimensions invalides: {img.width}x{img.height}")
 
-                # Reduire la taille tout en gardant les proportions
-                max_dim = 4096
+                # Reduction progressive
+                max_dim = 2048
                 ratio = min(max_dim / img.width, max_dim / img.height)
                 if ratio < 1:
                     new_size = (int(img.width * ratio), int(img.height * ratio))
                     img = img.resize(new_size, PILImage.LANCZOS)
+                    logger.info(f"Redimensionne a: {new_size}")
+
+                # Compression JPEG
                 buf = io.BytesIO()
-                img.save(buf, format='PNG')
-                raw_data = buf.getvalue()
-                media_type = 'image/png'
-                logger.info(f"Image redimensionnee: {len(raw_data)} octets")
+                img.save(buf, format='JPEG', quality=85, optimize=True)
+                compressed_data = buf.getvalue()
+
+                # Si toujours trop gros, reduire qualite
+                if len(compressed_data) > max_size:
+                    logger.warning(f"Encore trop gros, reduction supplementaire")
+                    buf2 = io.BytesIO()
+                    img.save(buf2, format='JPEG', quality=60, optimize=True)
+                    compressed_data = buf2.getvalue()
+
+                raw_data = compressed_data
+                media_type = 'image/jpeg'
+                logger.info(f"Apres compression: {len(raw_data) / (1024*1024):.2f} MB")
+
             except Exception as e:
-                logger.warning(f"Echec du redimensionnement, utilisation de l'image originale: {e}")
-                # On continue avec raw_data original
+                logger.error(f"Erreur compression: {e}")
+                raise ValueError(f"Impossible de compresser le fichier: {e}")
 
         image_data = base64.b64encode(raw_data).decode('utf-8')
         return image_data, media_type
+    
+    def _encode_pdf(self, pdf_path: str) -> tuple:
+        """
+        Convertit un PDF en image JPEG pour Claude API.
+        Claude Vision ne supporte pas les PDFs directement.
+
+        Returns:
+            (base64_data, media_type)
+        """
+        import io
+        
+        path = Path(pdf_path)
+        if not path.exists():
+            raise FileNotFoundError(f"PDF introuvable: {pdf_path}")
+
+        try:
+            import fitz
+        except ImportError:
+            raise ValueError("PyMuPDF (fitz) requis pour convertir les PDFs")
+
+        logger.info(f"Conversion PDF en image: {pdf_path}")
+        
+        # Ouvrir le PDF
+        doc = fitz.open(pdf_path)
+        if len(doc) == 0:
+            doc.close()
+            raise ValueError("PDF vide")
+        
+        # Convertir la premiere page en image
+        page = doc.load_page(0)
+        zoom = 2.0  # Haute qualite
+        mat = fitz.Matrix(zoom, zoom)
+        pix = page.get_pixmap(matrix=mat)
+        doc.close()
+        
+        # Convertir en image JPEG
+        img_data = pix.tobytes("jpeg")
+        file_size = len(img_data)
+        logger.info(f"PDF converti: {file_size / 1024:.1f} KB")
+        
+        # Compresser si trop grand (> 4MB)
+        max_size = 4 * 1024 * 1024
+        if file_size > max_size:
+            logger.warning(f"Image trop grande, compression supplementaire")
+            
+            from PIL import Image as PILImage
+            img = PILImage.open(io.BytesIO(img_data))
+            
+            # Reduire la taille
+            max_dim = 2048
+            ratio = min(max_dim / img.width, max_dim / img.height)
+            if ratio < 1:
+                new_size = (int(img.width * ratio), int(img.height * ratio))
+                img = img.resize(new_size, PILImage.LANCZOS)
+            
+            buf = io.BytesIO()
+            img.save(buf, format='JPEG', quality=80, optimize=True)
+            img_data = buf.getvalue()
+            logger.info(f"Apres compression: {len(img_data) / 1024:.1f} KB")
+        
+        image_data = base64.b64encode(img_data).decode('utf-8')
+        return image_data, 'image/jpeg'
 
     def _build_extraction_prompt(self) -> str:
         """

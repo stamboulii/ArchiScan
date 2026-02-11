@@ -1,0 +1,39 @@
+RAPPORT D'EXTRACTION
+==================================================
+Session ID: session_20260210_114555
+Nombre d'entrées: 5
+==================================================
+
+[1] 2026-02-10T11:45:55.961648
+    Événement: extraction_start
+    image_path: /path/to/plan.png
+    method: claude
+    status: started
+
+[2] 2026-02-10T11:45:55.962735
+    Événement: method_attempt
+    method: claude
+    success: False
+    error: Credit limit reached
+    result_keys: None
+
+[3] 2026-02-10T11:45:55.964489
+    Événement: fallback
+    from_method: claude
+    to_method: tesseract
+    reason: API error
+
+[4] 2026-02-10T11:45:55.966607
+    Événement: tesseract_ocr
+    image_path: /path/to/plan.png
+    text_length: 150
+    success: True
+    error: None
+
+[5] 2026-02-10T11:45:55.969770
+    Événement: extraction_end
+    success: True
+    extraction_id: 1
+    error: None
+    duration_ms: 0
+

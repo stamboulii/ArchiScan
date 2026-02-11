@@ -164,11 +164,22 @@ class TestIsAvailable:
 
     def test_available_with_key(self):
         from claude_vision_extractor import ClaudeVisionExtractor
-        ext = ClaudeVisionExtractor(api_key="sk-test-key")
-        assert ext.is_available() is True
+        from unittest.mock import patch
+        
+        # Patch the config to have a valid API key
+        with patch('config._config') as mock_config:
+            mock_config.claude_api_key = "sk-test-key"
+            ext = ClaudeVisionExtractor(api_key="sk-test-key")
+            assert ext.is_available() is True
 
     def test_not_available_without_key(self):
         from claude_vision_extractor import ClaudeVisionExtractor
-        with patch('claude_vision_extractor.CLAUDE_API_KEY', ''):
+        from unittest.mock import patch
+        
+        # Patch the config to have no API key (need to patch the singleton's config too)
+        with patch('config._config') as mock_config, \
+             patch('config._secrets_manager._config') as mock_singleton_config:
+            mock_config.claude_api_key = ""
+            mock_singleton_config.claude_api_key = ""
             ext = ClaudeVisionExtractor(api_key='')
             assert ext.is_available() is False

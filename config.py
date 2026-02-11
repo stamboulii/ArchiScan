@@ -4,12 +4,15 @@ Tous les chemins, cles API et constantes en un seul endroit.
 Validation avec Pydantic. Supporte les variables d'environnement (prefixe ARCHI_).
 """
 
+import logging
 import os
 import tempfile
 from pathlib import Path
 from typing import Optional
 
 from pydantic import BaseModel, field_validator
+
+logger = logging.getLogger(__name__)
 
 # Repertoire racine du projet (ou se trouve ce fichier)
 PROJECT_ROOT = Path(__file__).parent.resolve()
@@ -32,7 +35,7 @@ class AppConfig(BaseModel):
     # Claude API - OBLIGATOIRE pour Phase 1+
     # Ne pas mettre de valeur par defaut! Doit etre fourni via variable d'environnement
     claude_api_key: str = ""
-    claude_model: str = "claude-sonnet-4-5-20250514"
+    claude_model: str = "claude-sonnet-4-20250514"
     claude_max_tokens: int = 4096
 
     # Seuils
@@ -163,6 +166,7 @@ CLAUDE_MAX_TOKENS = _config.claude_max_tokens
 PHASE_AUTO = "auto"
 PHASE_TESSERACT = "tesseract"
 PHASE_CLAUDE = "claude"
+PHASE_PYMUPDF = "pymupdf"
 PHASE_ML = "ml"
 DEFAULT_PHASE = PHASE_AUTO
 
@@ -191,3 +195,123 @@ def reload_config() -> AppConfig:
     global _config
     _config = _load_config()
     return _config
+
+
+# =============================================================================
+# Gestionnaire de Secrets - Securite Avancee
+# =============================================================================
+
+class SecretsManager:
+    """
+    Gestionnaire de secrets pour ArchiExtract.
+    Fournit des方法 securisees pour acceder aux credentials.
+    
+    Fonctionnalites:
+    - Masquage des secrets dans les logs
+    - Audit des acces aux credentials
+    - Validation de la presence des secrets requis
+    """
+    
+    # Secrets requis pour chaque phase
+    REQUIRED_SECRETS = {
+        'claude': ['claude_api_key'],
+        'tesseract': [],  # Pas de secret pour Tesseract local
+    }
+    
+    def __init__(self):
+        self._config = _config
+        self._audit_log = []
+    
+    def _mask_secret(self, secret: str, visible_chars: int = 4) -> str:
+        """
+        Masque un secret pour l'affichage securise.
+        
+        Args:
+            secret: Le secret a masquer
+            visible_chars: Nombre de caracteres visibles a la fin
+            
+        Returns:
+            Secret masque (ex: "sk-ant-****-abcd")
+        """
+        if not secret or len(secret) <= visible_chars:
+            return "****"
+        return secret[:visible_chars] + "****"
+    
+    def get_claude_api_key(self) -> str:
+        """
+        Recupere la cle API Claude de maniere securisee.
+        
+        Returns:
+            La cle API Claude
+            
+        Raises:
+            ValueError: Si la cle n'est pas configuree
+        """
+        secret = self._config.claude_api_key
+        if not secret:
+            logger.error("Tentative d'acces a la cle API Claude non configuree")
+            raise ValueError(
+                "La cle API Claude n'est pas configuree. "
+                "Definissez ARCHI_CLAUDE_API_KEY dans votre fichier .env"
+            )
+        
+        # Audit log (sans reveler le secret complet)
+        masked = self._mask_secret(secret)
+        self._audit_log.append({
+            'timestamp': str(Path(__file__).resolve()),
+            'action': 'get_claude_api_key',
+            'source': 'config',
+            'masked_key': masked
+        })
+        logger.info(f"[AUDIT] Acces a la cle API Claude autorise (cle: {masked})")
+        
+        return secret
+    
+    def validate_all_secrets(self, required_level: str = 'claude') -> bool:
+        """
+        Valide que tous les secrets requis sont presentes.
+        
+        Args:
+            required_level: Niveau de securite requis ('claude', 'tesseract')
+            
+        Returns:
+            True si tous les secrets sont presents
+            
+        Raises:
+            ValueError: Si un secret requis est manquant
+        """
+        required = self.REQUIRED_SECRETS.get(required_level, [])
+        missing = []
+        
+        for secret_name in required:
+            value = getattr(self._config, secret_name, None)
+            if not value:
+                missing.append(secret_name)
+        
+        if missing:
+            error_msg = (
+                f"Secrets manquants pour le niveau '{required_level}': {missing}. "
+                f"Veuillez configurer les variables d'environnement: {', '.join(missing)}"
+            )
+            logger.error(f"[AUDIT] ECHEC de validation des secrets: {missing}")
+            raise ValueError(error_msg)
+        
+        logger.info(f"[AUDIT] Validation des secrets reussie pour le niveau '{required_level}'")
+        return True
+    
+    def get_audit_log(self) -> list:
+        """Retourne l'historique des acces aux secrets."""
+        return self._audit_log.copy()
+    
+    def clear_audit_log(self):
+        """Vide l'historique des acces aux secrets."""
+        self._audit_log.clear()
+
+
+# Singleton du gestionnaire de secrets
+_secrets_manager = SecretsManager()
+
+
+def get_secrets_manager() -> SecretsManager:
+    """Retourne le gestionnaire de secrets (singleton)."""
+    return _secrets_manager

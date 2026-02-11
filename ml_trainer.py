@@ -11,59 +11,9 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from config import ML_MODEL_DIR, ML_CONFIDENCE_THRESHOLD, ensure_directories
+from parcel import normalize_parcel_data, ParcelData, validate_parcel_data
 
 logger = logging.getLogger(__name__)
-
-
-def normalize_parcel_data(raw: dict) -> dict:
-    """
-    Normalise un dict brut au format ParcelData.
-    Fonction standalone pour eviter de coupler MLExtractor a ClaudeVisionExtractor.
-
-    Args:
-        raw: Dict brut issu du modele ML ou d'un parser JSON
-
-    Returns:
-        Dict conforme a la structure ParcelData
-    """
-    from architecture_plan_extractor import ParcelData
-
-    parcel = ParcelData()
-
-    parcel.parcelLabel = str(raw.get('parcelLabel', ''))
-    parcel.parcelTypeId = str(raw.get('parcelTypeId', 'appartment'))
-    parcel.parcelTypeLabel = str(raw.get('parcelTypeLabel', 'appartment'))
-    parcel.typology = str(raw.get('typology', ''))
-    parcel.floor = str(raw.get('floor', ''))
-    parcel.orientation = str(raw.get('orientation', ''))
-    parcel.price = str(raw.get('price', 'N.C')) or 'N.C'
-    parcel.living_space = str(raw.get('living_space', ''))
-    parcel.tva = str(raw.get('tva', ''))
-    parcel.pinel = str(raw.get('pinel', ''))
-    parcel.state = str(raw.get('state', 'available'))
-    parcel.customData = raw.get('customData', None)
-
-    # Surface detail: assurer les valeurs float
-    sd = raw.get('surfaceDetail', {})
-    if isinstance(sd, dict):
-        parcel.surfaceDetail = {}
-        for k, v in sd.items():
-            if v is not None and v != "" and v != 0:
-                try:
-                    parcel.surfaceDetail[k] = float(v)
-                except (ValueError, TypeError) as e:
-                    logger.warning(
-                        f"Surface '{k}' ignoree, valeur non convertible: '{v}' ({e})"
-                    )
-
-    # Options: assurer les valeurs bool, fusionner avec les defauts
-    opts = raw.get('option', {})
-    if isinstance(opts, dict):
-        for key in parcel.option:
-            if key in opts:
-                parcel.option[key] = bool(opts[key])
-
-    return asdict(parcel)
 
 
 class MLExtractor:

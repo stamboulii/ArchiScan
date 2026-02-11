@@ -1,42 +1,65 @@
-pytesseract
-opencv-python
-Pillow
-numpy<2.0
+# =============================================================================
+# ArchiExtract - Dependencies
+# =============================================================================
+# Installation: pip install -r requirements.txt
+# =============================================================================
 
-# Alternative OCR (optionnel, à décommenter si nécessaire)
-# easyocr==1.7.0
-# google-cloud-vision==3.4.4
+# === Core Dependencies ===
 
-# Interface utilisateur
-streamlit==1.28.1
-streamlit-cropper==0.2.1
+pytesseract              # OCR avec Tesseract
+opencv-python            # Pretraitement d'images
+Pillow                   # Manipulation d'images
+numpy                    # Operations numeriques (sans contrainte de version)
 
-# Utilitaires
-pdf2image==1.16.3  # Pour traiter les PDFs
-python-magic==0.4.27  # Détection de type de fichier
+# === Alternative OCR (optionnel) ===
+# Decommentez si necessaire:
+# easyocr>=1.7.0
+# google-cloud-vision>=3.4.4
 
-# Matching et parsing
-fuzzywuzzy==0.18.0
-python-Levenshtein==0.23.0
+# === Interface Utilisateur ===
+# Streamlit 1.x est compatible avec Python 3.8+
+streamlit>=1.28.0
+streamlit-cropper>=0.2.0
 
-# Validation
+# === Utilitaires ===
+pdf2image>=1.16.0        # Conversion PDF -> Images (Windows-compatible)
+python-magic>=0.4.27     # Detection de type de fichier
+
+# === Matching et Parsing ===
+# thefuzz est le remplacement officiel de fuzzywuzzy
+thefuzz>=0.20.0
+python-Levenshtein>=0.23.0  # Acceleration optionnelle pour thefuzz
+
+# === Validation ===
 pydantic>=2.5.0
+fastapi>=0.109.0          # NOUVEAU: API REST
+uvicorn>=0.27.0            # NOUVEAU: Serveur ASGI pour FastAPI
+python-multipart>=0.0.6     # NOUVEAU: Upload de fichiers pour FastAPI
 
-# Pour les graphiques de confiance (optionnel)
-plotly==5.18.0
+# === Visualisation (optionnel) ===
+plotly>=5.18.0
+openpyxl>=3.1.0           # NOUVEAU: Export Excel
 
 # === Tests ===
 pytest>=7.4.0
+pytest-cov>=4.1.0
 
 # === Claude Vision API (Phase 1) ===
 anthropic>=0.39.0
 
-# === PDF handling (Windows-compatible, pas besoin de poppler) ===
+# === PDF Handling (Windows-compatible, pas besoin de poppler) ===
 PyMuPDF>=1.23.0
 
-# === ML Training (Phase 2-3, installer quand necessaire) ===
-# torch>=2.1.0
-# transformers>=4.36.0
-# datasets>=2.16.0
-# scikit-learn>=1.3.0
-# accelerate>=0.25.0
+# =============================================================================
+# Dependencies Optionnelles - ML Training (Phase 2-3)
+# =============================================================================
+# Decommentez pour installer les dependances ML:
+# - torch>=2.1.0
+# - transformers>=4.36.0
+# - datasets>=2.16.0
+# - scikit-learn>=1.3.0
+# - accelerate>=0.25.0
+# =============================================================================
+
+# Pour installer toutes les dependances ML d'un coup:
+# pip install -r requirements.txt -r requirements-ml.txt

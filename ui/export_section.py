@@ -41,7 +41,7 @@ def render_export_section():
     col1, col2, col3 = st.columns(3)
 
     with col1:
-        if st.button("Voir le tableau recapitulatif", use_container_width=True):
+        if st.button("Voir le tableau recapitulatif", width='stretch'):
             _display_summary_table()
 
     with col2:
@@ -51,11 +51,10 @@ def render_export_section():
             data=json_data,
             file_name="architecture_plans.json",
             mime="application/json",
-            use_container_width=True
         )
 
     with col3:
-        if st.button("Reinitialiser tout", type="secondary", use_container_width=True):
+        if st.button("Reinitialiser tout", type="secondary", width='stretch'):
             st.session_state.all_parcels = {}
             st.session_state.extracted_data = None
             st.session_state.last_extraction_id = None
@@ -80,7 +79,7 @@ def _display_summary_table():
         })
 
     df = pd.DataFrame(df_data)
-    st.dataframe(df, use_container_width=True)
+    st.dataframe(df, width='stretch')
 
 
 def _display_clean_json():

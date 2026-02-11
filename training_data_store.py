@@ -331,7 +331,7 @@ class TrainingDataStore:
             SELECT id, image_path, extraction_method, confidence,
                    validated_by_user, created_at
             FROM extractions
-            ORDER BY created_at DESC
+            ORDER BY created_at DESC, id DESC
             LIMIT ?
         """, (limit,))
         rows = cursor.fetchall()

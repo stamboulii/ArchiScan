@@ -8,13 +8,14 @@ from typing import Dict
 from ui.styles import METHOD_COLORS, METHOD_LABELS
 
 
-def display_parcel_data(data: dict, editable: bool = True) -> dict:
+def display_parcel_data(data: dict, editable: bool = True, key_prefix: str = "") -> dict:
     """
     Affiche et permet l'edition des donnees d'un lot.
 
     Args:
         data: Dictionnaire des donnees du lot
         editable: Si True, les champs sont editables
+        key_prefix: Prefix unique pour les IDs des widgets
 
     Returns:
         Dictionnaire des donnees (potentiellement modifiees)
@@ -29,12 +30,12 @@ def display_parcel_data(data: dict, editable: bool = True) -> dict:
     col1, col2 = st.columns(2)
 
     with col1:
-        _display_main_fields(data, editable)
+        _display_main_fields(data, editable, key_prefix)
 
     with col2:
-        _display_surface_fields(data, editable)
+        _display_surface_fields(data, editable, key_prefix)
 
-    _display_options(data, editable)
+    _display_options(data, editable, key_prefix)
 
     return data
 
@@ -59,17 +60,17 @@ def _display_extraction_meta(data: dict):
             st.markdown(f"**Confiance:** {confidence:.0%}")
 
 
-def _display_main_fields(data: dict, editable: bool):
+def _display_main_fields(data: dict, editable: bool, key_prefix: str = ""):
     """Affiche les champs principaux du lot."""
     st.markdown("### Informations principales")
 
     if editable:
-        data['parcelLabel'] = st.text_input("Reference lot", data.get('parcelLabel', ''))
-        data['typology'] = st.text_input("Typologie (T1, T2, etc.)", data.get('typology', ''))
-        data['floor'] = st.text_input("Etage", data.get('floor', ''))
-        data['orientation'] = st.text_input("Orientation", data.get('orientation', ''))
-        data['living_space'] = st.text_input("Surface habitable (m2)", data.get('living_space', ''))
-        data['price'] = st.text_input("Prix", data.get('price', 'N.C'))
+        data['parcelLabel'] = st.text_input("Reference lot", data.get('parcelLabel', ''), key=f"{key_prefix}parcelLabel")
+        data['typology'] = st.text_input("Typologie (T1, T2, etc.)", data.get('typology', ''), key=f"{key_prefix}typology")
+        data['floor'] = st.text_input("Etage", data.get('floor', ''), key=f"{key_prefix}floor")
+        data['orientation'] = st.text_input("Orientation", data.get('orientation', ''), key=f"{key_prefix}orientation")
+        data['living_space'] = st.text_input("Surface habitable (m2)", data.get('living_space', ''), key=f"{key_prefix}living_space")
+        data['price'] = st.text_input("Prix", data.get('price', 'N.C'), key=f"{key_prefix}price")
     else:
         st.write(f"**Reference lot:** {data.get('parcelLabel', 'N/A')}")
         st.write(f"**Typologie:** {data.get('typology', 'N/A')}")
@@ -79,7 +80,7 @@ def _display_main_fields(data: dict, editable: bool):
         st.write(f"**Prix:** {data.get('price', 'N.C')}")
 
 
-def _display_surface_fields(data: dict, editable: bool):
+def _display_surface_fields(data: dict, editable: bool, key_prefix: str = ""):
     """Affiche les surfaces annexes."""
     st.markdown("### Surfaces annexes")
 
@@ -87,13 +88,13 @@ def _display_surface_fields(data: dict, editable: bool):
 
     if editable:
         terrace = st.number_input(
-            "Terrasse (m2)", value=surface_detail.get('terrace', 0.0), step=0.01
+            "Terrasse (m2)", value=surface_detail.get('terrace', 0.0), step=0.01, key=f"{key_prefix}terrace"
         )
         balcony = st.number_input(
-            "Balcon (m2)", value=surface_detail.get('balcony', 0.0), step=0.01
+            "Balcon (m2)", value=surface_detail.get('balcony', 0.0), step=0.01, key=f"{key_prefix}balcony"
         )
         garden = st.number_input(
-            "Jardin (m2)", value=surface_detail.get('garden', 0.0), step=0.01
+            "Jardin (m2)", value=surface_detail.get('garden', 0.0), step=0.01, key=f"{key_prefix}garden"
         )
 
         data['surfaceDetail'] = {}
@@ -111,7 +112,7 @@ def _display_surface_fields(data: dict, editable: bool):
             st.write("*Aucune surface annexe*")
 
 
-def _display_options(data: dict, editable: bool):
+def _display_options(data: dict, editable: bool, key_prefix: str = ""):
     """Affiche les options (terrasse, parking, etc.)."""
     st.markdown("### Options disponibles")
 
@@ -125,7 +126,8 @@ def _display_options(data: dict, editable: bool):
             with cols[i % 4]:
                 options[option] = st.checkbox(
                     option.replace('_', ' ').title(),
-                    value=options[option]
+                    value=options[option],
+                    key=f"{key_prefix}option_{option}"
                 )
 
         data['option'] = options
@@ -152,14 +154,14 @@ def render_extraction_results(extractor):
     col_save, col_validate = st.columns(2)
 
     with col_save:
-        if st.button("Sauvegarder", use_container_width=True):
+        if st.button("Sauvegarder", width='stretch'):
             parcel_id = edited_data.get('parcelLabel', 'LOT_001')
             st.session_state.all_parcels[parcel_id] = edited_data
             st.session_state.extracted_data = edited_data
             st.success("Modifications sauvegardees!")
 
     with col_validate:
-        if st.button("Valider pour ML", type="primary", use_container_width=True):
+        if st.button("Valider pour ML", type="primary", width='stretch'):
             extraction_id = st.session_state.last_extraction_id
             if extraction_id:
                 extractor.validate_extraction_by_id(

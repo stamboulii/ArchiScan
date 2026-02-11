@@ -3,7 +3,7 @@ Sidebar : configuration, phase actuelle, progression et options.
 """
 
 import streamlit as st
-from hybrid_extractor import HybridExtractor
+from src.extractors.hybrid_extractor import HybridExtractor
 from ui.styles import PHASE_ICONS
 
 
@@ -111,6 +111,7 @@ def _render_method_selector():
     method_options = {
         "Auto": None,
         "Claude Vision": "claude",
+        "PyMuPDF (PDF direct)": "pymupdf",
         "Tesseract OCR": "tesseract",
         "ML Custom": "ml"
     }
@@ -126,3 +127,4 @@ def _render_method_selector():
             api_key=st.session_state.api_key or None,
             force_method=new_method
         )
+        st.rerun()

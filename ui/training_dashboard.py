@@ -103,7 +103,6 @@ def _display_recent_extractions():
                 )
                 st.dataframe(
                     df_recent[['id', 'extraction_method', 'confidence', 'validated', 'created_at']],
-                    use_container_width=True,
                     column_config={
                         'id': 'ID',
                         'extraction_method': 'Methode',
