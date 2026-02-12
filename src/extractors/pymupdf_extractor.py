@@ -509,7 +509,7 @@ class PyMuPDFExtractor:
         
         # Creer un objet ParcelData
         return ParcelData(
-            parcelLabel=normalized.get('parcel_label', ''),
+            parcelLabel=normalized.get('parcelLabel', normalized.get('parcel_label', '')),
             typology=normalized.get('typology', ''),
             floor=normalized.get('floor', ''),
             living_space=normalized.get('living_space', ''),

@@ -229,6 +229,136 @@ class TrainingDataStore:
         self._update_statistics()
         logger.info(f"Extraction #{extraction_id} validee")
 
+    def validate_by_image_path(self, image_path: str, corrected_data: Dict = None) -> int:
+        """
+        Valide l'extraction la plus recente pour un fichier donne.
+        Utile quand l'ID n'est pas connu.
+        
+        Args:
+            image_path: Chemin du fichier image/PDF
+            corrected_data: Donnees corrigees optionnelles
+            
+        Returns:
+            Nombre de lignes mises a jour (0 si aucune correspondance)
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Trouver l'extraction la plus recente pour ce fichier
+            cursor.execute("""
+                SELECT id FROM extractions
+                WHERE image_path = ?
+                ORDER BY id DESC
+                LIMIT 1
+            """, (image_path,))
+            
+            row = cursor.fetchone()
+            if not row:
+                logger.warning(f"Aucune extraction trouvee pour {image_path}")
+                return 0
+            
+            extraction_id = row[0]
+            
+            if corrected_data:
+                clean = {k: v for k, v in corrected_data.items()
+                         if not k.startswith('_')}
+                corrected_json = json.dumps(clean, ensure_ascii=False)
+                cursor.execute("""
+                    UPDATE extractions
+                    SET validated_by_user = 1,
+                        user_corrected_json = ?,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                """, (corrected_json, extraction_id))
+            else:
+                cursor.execute("""
+                    UPDATE extractions
+                    SET validated_by_user = 1,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                """, (extraction_id,))
+            
+            updated = cursor.rowcount
+            if updated == 0:
+                logger.warning(f"Extraction #{extraction_id} introuvable pour validation")
+
+        self._update_statistics()
+        logger.info(f"Extraction #{extraction_id} validee via image_path")
+        return updated
+    
+    def validate_or_save(self, image_path: str, extracted_data: Dict, method: str, confidence: float, corrected_data: Dict = None):
+        """
+        Valide une extraction existante OU la cree et la valide si elle n'existe pas.
+        Methode robuste pour la validation.
+        
+        Args:
+            image_path: Chemin du fichier
+            extracted_data: Donnees extraites
+            method: Methode d'extraction utilisee
+            confidence: Score de confiance
+            corrected_data: Donnees corrigees optionnelles
+            
+        Returns:
+            ID de l'extraction validee
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Tenter de trouver une extraction existante
+            cursor.execute("""
+                SELECT id FROM extractions
+                WHERE image_path = ?
+                ORDER BY id DESC
+                LIMIT 1
+            """, (image_path,))
+            
+            row = cursor.fetchone()
+            
+            if row:
+                # Mise a jour de l'extraction existante
+                extraction_id = row[0]
+                if corrected_data:
+                    clean = {k: v for k, v in corrected_data.items()
+                             if not k.startswith('_')}
+                    corrected_json = json.dumps(clean, ensure_ascii=False)
+                    cursor.execute("""
+                        UPDATE extractions
+                        SET validated_by_user = 1,
+                            user_corrected_json = ?,
+                            extracted_json = ?,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE id = ?
+                    """, (corrected_json, json.dumps(extracted_data, ensure_ascii=False), extraction_id))
+                else:
+                    cursor.execute("""
+                        UPDATE extractions
+                        SET validated_by_user = 1,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE id = ?
+                    """, (extraction_id,))
+            else:
+                # Creer une nouvelle extraction avec validation
+                image_hash = self._hash_file(image_path)
+                extracted_json = json.dumps(extracted_data, ensure_ascii=False)
+                corrected_json = None
+                if corrected_data:
+                    clean = {k: v for k, v in corrected_data.items()
+                             if not k.startswith('_')}
+                    corrected_json = json.dumps(clean, ensure_ascii=False)
+                
+                cursor.execute("""
+                    INSERT INTO extractions (
+                        image_hash, image_path, extracted_json, 
+                        extraction_method, confidence, validated_by_user, user_corrected_json
+                    ) VALUES (?, ?, ?, ?, ?, 1, ?)
+                """, (image_hash, image_path, extracted_json, method, confidence, corrected_json))
+                
+                extraction_id = cursor.lastrowid
+                logger.info(f"Nouvelle extraction #{extraction_id} creee et validee")
+
+        self._update_statistics()
+        return extraction_id
+
     def get_training_data(self, validated_only: bool = True) -> List[Dict]:
         """
         Recupere les donnees d'entrainement pour le modele ML.

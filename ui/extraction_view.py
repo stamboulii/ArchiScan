@@ -4,8 +4,11 @@ Vue d'extraction : affichage et edition des donnees extraites d'un lot.
 
 import streamlit as st
 from typing import Dict
+import logging
 
 from ui.styles import METHOD_COLORS, METHOD_LABELS
+
+logger = logging.getLogger(__name__)
 
 
 def display_parcel_data(data: dict, editable: bool = True, key_prefix: str = "") -> dict:
@@ -162,15 +165,28 @@ def render_extraction_results(extractor):
 
     with col_validate:
         if st.button("Valider pour ML", type="primary", width='stretch'):
-            extraction_id = st.session_state.last_extraction_id
-            if extraction_id:
-                extractor.validate_extraction_by_id(
-                    extraction_id,
-                    corrected_data=edited_data
-                )
-                st.success(
-                    "Extraction validee et sauvegardee pour l'entrainement ML!"
-                )
-            else:
-                extractor.validate_last_extraction(corrected_data=edited_data)
-                st.success("Extraction validee!")
+            # Methode robuste: valider ou creer l'extraction
+            try:
+                image_path = st.session_state.get('last_uploaded_file')
+                extracted_data = st.session_state.get('extracted_data', {})
+                meta = extracted_data.get('_extraction_meta', {})
+                method = meta.get('method', 'unknown')
+                confidence = meta.get('confidence', 0)
+                
+                if image_path and extracted_data:
+                    extraction_id = extractor.validate_or_save(
+                        image_path=image_path,
+                        extracted_data=extracted_data,
+                        method=method,
+                        confidence=confidence,
+                        corrected_data=edited_data
+                    )
+                    st.success(
+                        f"Extraction validee et sauvegardee pour l'entrainement ML! (ID: {extraction_id})"
+                    )
+                else:
+                    st.error("Impossible de valider: donnees manquantes")
+                    
+            except Exception as e:
+                st.error(f"Erreur de validation: {e}")
+                logger.error(f"Erreur validation: {e}", exc_info=True)

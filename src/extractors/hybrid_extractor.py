@@ -83,6 +83,53 @@ class HybridExtractor:
         """Valide une extraction et la marque comme correcte pour le ML."""
         return self.data_store.validate_extraction(extraction_id, corrected_data)
     
+    def validate_by_image_path(self, image_path: str, corrected_data: Dict = None):
+        """
+        Valide l'extraction la plus recente pour un fichier donne.
+        
+        Args:
+            image_path: Chemin du fichier
+            corrected_data: Donnees corrigees optionnelles
+        """
+        return self.data_store.validate_by_image_path(image_path, corrected_data)
+    
+    def validate_or_save(self, image_path: str, extracted_data: Dict, method: str, confidence: float, corrected_data: Dict = None):
+        """
+        Valide une extraction existante OU la cree et la valide si elle n'existe pas.
+        
+        Args:
+            image_path: Chemin du fichier
+            extracted_data: Donnees extraites
+            method: Methode d'extraction
+            confidence: Score de confiance
+            corrected_data: Donnees corrigees optionnelles
+            
+        Returns:
+            ID de l'extraction validee
+        """
+        return self.data_store.validate_or_save(image_path, extracted_data, method, confidence, corrected_data)
+    
+    def validate_last_extraction(self, corrected_data: Dict = None):
+        """
+        Valide la dernier extraction.
+        
+        Args:
+            corrected_data: Donnees corrigees optionnelles
+        """
+        # Essayer de recuperer depuis session state (depuis _run_extraction)
+        from streamlit import session_state as st_session_state
+        last_id = getattr(st_session_state, 'last_extraction_id', None)
+        
+        if last_id:
+            return self.data_store.validate_extraction(last_id, corrected_data)
+        
+        # Fallback sur l'attribut de l'instance
+        last_id = getattr(self, '_last_extraction_id', None)
+        if last_id:
+            return self.data_store.validate_extraction(last_id, corrected_data)
+        
+        raise ValueError("Aucune extraction a valider")
+    
     @property
     def tesseract_extractor(self) -> ArchitecturePlanExtractor:
         """Extracteur Tesseract."""
@@ -228,7 +275,14 @@ class HybridExtractor:
         
         if method == PHASE_CLAUDE:
             result = self._extract_with_claude(image_path)
+        elif method == PHASE_ML:
+            # ML Custom pas encore entraine - fallback vers Tesseract
+            logger.warning("ML Custom pas encore disponible, fallback vers Tesseract")
+            result = self._extract_with_tesseract(image_path)
+            result['_extraction_meta'] = result.get('_extraction_meta', {})
+            result['_extraction_meta']['fallback_reason'] = "ML Custom pas encore entraine"
         else:
+            # Tesseract pour les autres cas (tesseract, pymupdf handled elsewhere)
             result = self._extract_with_tesseract(image_path)
         
         # Sauvegarder dans le data store
@@ -240,6 +294,7 @@ class HybridExtractor:
                 confidence=result.get('_extraction_meta', {}).get('confidence'),
             )
             result['_extraction_id'] = extraction_id
+            self._last_extraction_id = extraction_id
         except Exception as e:
             logger.warning(f"Echec sauvegarde data store: {e}")
         
@@ -314,9 +369,13 @@ class HybridExtractor:
                     method=PHASE_PYMUPDF,
                     confidence=result.confidence,
                 )
-                extracted_data['_extraction_id'] = extraction_id
             except Exception as e:
                 logger.warning(f"Echec sauvegarde data store: {e}")
+                # Generer un ID temporaire pour permettre la validation
+                extraction_id = int(time.time() * 1000)  # Timestamp comme ID
+            
+            extracted_data['_extraction_id'] = extraction_id
+            self._last_extraction_id = extraction_id
             
             logger.info(f"Extraction PyMuPDF terminee en {duration_ms:.2f}ms")
             return extracted_data

@@ -127,4 +127,5 @@ def _render_method_selector():
             api_key=st.session_state.api_key or None,
             force_method=new_method
         )
-        st.rerun()
+        # Message pour informer l'utilisateur
+        st.success(f"Methode changed to: {selected}")

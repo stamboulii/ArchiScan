@@ -105,6 +105,11 @@ def _render_single_upload(extractor):
             ):
                 _run_extraction(extractor, temp_path)
 
+            # Auto-extraction si le fichier est deja charge et la methode a change
+            if temp_path and st.session_state.get('needs_re_extraction', False):
+                st.session_state.needs_re_extraction = False
+                _run_extraction(extractor, temp_path)
+
         with col2:
             if st.session_state.extracted_data is not None:
                 from ui.extraction_view import render_extraction_results
@@ -143,8 +148,11 @@ def _render_batch_upload(extractor):
                 try:
                     temp_path, _ = handle_file_upload(uploaded_file)
                     if temp_path:
-                        # Utiliser extract_from_pdf pour les fichiers PDF
-                        if temp_path.lower().endswith('.pdf'):
+                        # Verifier si on doit utiliser PyMuPDF
+                        force_method = st.session_state.get('force_method')
+                        
+                        # Utiliser extract_from_pdf pour les fichiers PDF UNIQUEMENT si PyMuPDF est selectionne
+                        if temp_path.lower().endswith('.pdf') and force_method == 'pymupdf':
                             result = extractor.extract_from_pdf(temp_path)
                         else:
                             result = extractor.extract_from_image(temp_path)
@@ -251,12 +259,18 @@ def _render_batch_results(extractor):
 
 def _run_extraction(extractor, temp_path: str):
     """Execute l'extraction et met a jour le session state."""
-    from config import DEBUG_DIR
+    from config import DEBUG_DIR, PHASE_PYMUPDF
+    
+    # Stocker le chemin du fichier pour permettre re-extraction
+    st.session_state.last_uploaded_file = temp_path
     
     with st.spinner("Extraction en cours..."):
         try:
-            # Utiliser extract_from_pdf pour les fichiers PDF si PyMuPDF est selectionne
-            if temp_path.lower().endswith('.pdf'):
+            # Verifier si on doit utiliser PyMuPDF
+            force_method = st.session_state.get('force_method')
+            
+            # Utiliser extract_from_pdf pour les fichiers PDF UNIQUEMENT si PyMuPDF est selectionne
+            if temp_path.lower().endswith('.pdf') and force_method == PHASE_PYMUPDF:
                 result = extractor.extract_from_pdf(temp_path)
             else:
                 result = extractor.extract_from_image(temp_path)
