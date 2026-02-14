@@ -1,556 +1,456 @@
 """
-PyMuPDF Extractor - Extraction Directe PDF
-===========================================
+PyMuPDF Extractor V5.3 - PRODUCTION READY
+Critical fix: Filter out category totals that are sums of other rooms
 
-Extracteur base sur PyMuPDF (fitz) pour les fichiers PDF.
-Extraction directe du texte SANS conversion en image.
-Methode propre et rapide pour les PDF textes.
+Issue example from A105:
+- Réception: 41.97 m² (category total: Séjour 34.65 + Cuisine 7.32)
+- Réception: 15.05 m² (actual room)
 
-Attributes:
-    - Extraction directe du texte PDF
-    - Preservation de la structure (tableaux, listes)
-    - Detection des metadonnees PDF
-    - Compatible avec les PDF hybrides (texte + images)
+The extractor was creating both "reception: 41.97" and "reception_1: 15.05"
+Now it validates values and skips category totals.
 """
 
 import re
 import logging
-from typing import Dict, List, Optional, Any
-from pathlib import Path
+from typing import Dict, List, Optional, Any, Set
 from dataclasses import dataclass, field
+import fitz
 
-import fitz  # PyMuPDF
-
-from ..core.parcel import ParcelData, normalize_parcel_data, DEFAULT_OPTIONS
-from ..core.exceptions import ExtractionError
+from ..core.parcel import ParcelData, DEFAULT_OPTIONS
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
 class PyMuPDFExtractionResult:
-    """Resultat de l'extraction PyMuPDF."""
     success: bool
     text: str = ""
     cleaned_text: str = ""
-    raw_blocks: List[Dict] = field(default_factory=list)
+    parsed_data: Dict[str, Any] = field(default_factory=dict)
+    raw_blocks: List = field(default_factory=list)
     metadata: Dict = field(default_factory=dict)
     confidence: float = 0.0
     error: Optional[str] = None
 
 
 class PyMuPDFExtractor:
-    """
-    Extracteur utilisant PyMuPDF pour l'extraction directe du texte.
-    
-    Avantages:
-    - Pas de conversion PDF -> Image necessaire
-    - Extraction rapide du texte natif
-    - Conservation de la structure du document
-    - Detection automatique du texte embedde
-    
-    Limites:
-    - Ne fonctionne que sur les PDF avec texte extractible
-    - Necessite un PDF avec couche texte (pas uniquement des images scannees)
-    """
-    
-    # Patterns regex pour l'extraction des donnees de parcel
+
     PATTERNS = {
-        'parcelLabel': [
-            r'\b([A-Z]\d{3})\b',  # Format A001
-            r'\bLot\s*[#]?\s*([A-Z]?\d{2,3})\b',  # Lot A01 ou Lot 001
-            r'\bAppartement\s*[#]?\s*([A-Z]?\d{2,3})\b',
-            r'\bN°\s*(?:Lot|Appartement)?\s*[:]?\s*([A-Z]?\d{2,3})\b',
+        "parcelLabel": [r"\b([A-Z]\d{2,4})\b"],
+        "typology": [r"\bT([1-9])\b", r"\b(\d)\s*pi[èe]ces?\b"],
+        "floor": [
+            r"\b(RDC|R\+\d+)\b",
+            r"\b(\d+)(?:er|ème|e)\s+étage\b",
+            r"\bétage\s+(\d+)\b",
         ],
-        'typology': [
-            r'\b(T[1-9])\b',  # T1, T2, T3, etc.
-            r'\b(F[1-9])\b',  # F1, F2, etc.
-            r'\b(\d)\s*pieces?\b',  # 2 pieces, 3 pieces
-            r'\b(\d)P\b',  # 2P, 3P, 4P
-            r'\bType\s*[T|F]\d\b',  # Type T2
-        ],
-        'floor': [
-            r'\b(RDC|R\.D\.C\.?)\b',  # Rez-de-chaussee
-            r'\bRez[- ]de[- ]chaussee\b',
-            r'\b(R\+\d+)\b',  # R+1, R+2
-            r'\bEtage\s*(\d+)\b',  # Etage 1
-            r'\b(\d+)(?:er|eme)?\s*[eé]tage\b',  # 1er etage
-            r'\b[Nn]iveau\s*(\d+)\b',
-        ],
-        'living_space': [
-            r'Surface\s*(?:habitable|utile|Totale)?\s*[:]?\s*(\d+[.,]?\d*)',
-            r'SH\s*[:]?\s*(\d+[.,]?\d*)',
-            r'\((\d+[.,]?\d*)\s*m[²2]\)',
-            # r'(\d+[.,]?\d*)\s*m[²2]',  # Trop generique, capture les balcons
-        ],
-        'orientation': [
-            r'\b([NSEO])\b(?:\s*[-–]\s*([NSEO]))?',  # N, S-E, N-O
-            r'\b(Nord|Sud|Est|Ouest)\b',
-            r'\b(Nord[- ]Sud|Sud[- ]Nord|Est[- ]Ouest|Ouest[- ]Est)\b',
-            r'Orientation\s*[:]?\s*([NSEO]|Nord|Sud|Est|Ouest)',
-        ],
-        'terrace': [
-            r'Terrasse\s*[:]?\s*(\d+[.,]?\d*)\s*m[²2]',
-            r'Terrasse\s*[:]?\s*(\d+[.,]?\d*)',
-            r'Balcon[- ]Terrasse\s*[:]?\s*(\d+[.,]?\d*)',
-        ],
-        'balcony': [
-            r'Balcon\s*[:]?\s*(\d+[.,]?\d*)\s*m[²2]',
-            r'Balcon\s*[:]?\s*(\d+[.,]?\d*)',
-        ],
-        'garden': [
-            r'Jardin\s*[:]?\s*(\d+[.,]?\d*)\s*m[²2]',
-            r'Jardin\s*[:]?\s*(\d+[.,]?\d*)',
-            r'Rez[- ]de[- ]jardin\s*[:]?\s*(\d+[.,]?\d*)',
-        ],
-        'price': [
-            r'(\d{3,6})\s*(?:€|EUR)\s*(?:HT|TTC)?',
-            r'Prix\s*(?:Total|Honnetaire|net)?\s*[:]?\s*(\d+)',
-            r'(\d{3,6})\s*(?:€|EUR)',
-            r'Co[ûu]ts?\s*(?:de)?\s*(?:construction|vente)?\s*[:]?\s*(\d+)',
-        ],
-        'parking': [
-            r'Parking\s*(?:inclus|boxe|numerote)?\s*[:]?\s*(?:Oui|Numéro\s*\d+)?',
-            r'Parking\s*[#]?\s*(\d+)',
-            r'Boxe?\s*(?:Auto)?\s*[#]?\s*(\d+)',
-            r'Emplacement\s*(?:Parking|Voiture)\s*[:]?\s*(\d+)',
-        ],
-        'cellar': [
-            r'Cave\s*[:]?\s*(\d+[.,]?\d*)\s*m[²2]',
-            r'Cave\s*[:]?\s*(?:Oui|№?\s*\d+)',
-            r'Cellier\s*[:]?\s*(\d+[.,]?\d*)',
+        "living_space": [
+            r"(?:TOTAL\s+)?SURFACE\s+HABITABLE[:\s]*(\d+[.,]\d+)",
+            r"TOTAL\s+SURFACE\s+HABITABLE.*?(\d+[.,]\d+)",
         ],
     }
-    
-    # Mots-cles pour les options/supplements
+
     OPTION_KEYWORDS = {
-        'terrace': ['terrasse', 'terrasse bois', 'terrasse beton'],
-        'balcony': ['balcon', 'balcon filant'],
-        'garden': ['jardin prive', 'jardin', 'rdc jardin'],
-        'parking': ['parking', 'boxe', 'garage', 'place de parking'],
-        'cellar': ['cave', 'cellier', 'sout'],
-        'duplex': ['duplex'],
-        'loggia': ['loggia'],
-        'winter garden': ['jardin d\'hiver', 'veranda', 'winter garden'],
+        "terrace": ["terrasse"],
+        "balcony": ["balcon"],
+        "garden": ["jardin"],
     }
-    
-    # Patterns specifiques pour les pieces et surfaces
-    # Patterns specifiques pour les pieces et surfaces
-    # Ajout de [:\s]* pour gerer "BALCON: 9.57" ou "BALCON 9.57"
-    ROOM_PATTERNS = {
-        r"CHAMBRE\s*[:]?\s*(\d+(?:\.\d+)?)\s*m²": ("chambre_{}", "chambre"),
-        r"S(?:EJOUR|ÉJOUR)/CUISINE\s*[:]?\s*(\d+(?:\.\d+)?)\s*m²": ("sejour_cuisine", "sejour"),
-        r"ENTR[EÉ]E\s*[:]?\s*(\d+(?:\.\d+)?)\s*m²": ("entree", "entree"),
-        r"(?:SDB|SALLE\s+DE\s+BAINS?)\s*[:]?\s*(\d+(?:\.\d+)?)\s*m²": ("salle_de_bain", "sdb"),
-        r"(?:SDE|SALLE\s+D['\s]EAU)\s*[:]?\s*(\d+(?:\.\d+)?)\s*m²": ("salle_d_eau", "sde"),
-        r"WC\s*[:]?\s*(\d+(?:\.\d+)?)\s*m²": ("wc", "wc"),
-        r"CELLIER\s*[:]?\s*(\d+(?:\.\d+)?)\s*m²": ("cellier", "cellier"),
-        r"BALCON\s*[:]?\s*(\d+(?:\.\d+)?)\s*m²": ("balcon", "exterieur"),
-        r"JARDIN\s*[:]?\s*(\d+(?:\.\d+)?)\s*m²": ("jardin", "exterieur"),
-        r"TERASSE\s*[:]?\s*(\d+(?:\.\d+)?)\s*m²": ("terrasse", "exterieur"),
-    }
-    
+
+    # Room patterns - order matters!
+    ROOM_PATTERNS = [
+        (r"CHAMBRE\s*\d*", "chambre", True),
+        (r"Chambre\s*\d*", "chambre", True),
+        (r"SEJOUR[/ ]*CUISINE", "sejour", True),
+        (r"SÉJOUR[/ ]*CUISINE", "sejour", True),
+        (r"SEJUR[ /CUI]*", "sejour", True),
+        (r"SEJOUR", "sejour", True),
+        (r"SÉJOUR", "sejour", True),
+        (r"CUISINE", "cuisine", True),
+        (r"RÉCEPTION", "reception", True),
+        (r"RECEPTION", "reception", True),
+        (r"ENTREE", "entree", True),
+        (r"ENTRÉE", "entree", True),
+        (r"\bDGT\b", "dgt", True),
+        (r"DÉGAGEMENT", "dgt", True),
+        (r"DEGAGEMENT", "dgt", True),
+        (r"S\.?D\.?B\.?", "salle_de_bain", True),
+        (r"SDB", "salle_de_bain", True),
+        (r"SALLE\s+DE\s+BAINS?", "salle_de_bain", True),
+        (r"SALLE\s+D['']EAU", "salle_d_eau", True),
+        (r"S\.?d\.?E\.?", "salle_d_eau", True),
+        (r"SDE\b", "salle_d_eau", True),
+        (r"\bWC\b", "wc", True),
+        (r"BALCON\s*\d*:?", "balcon", True),
+        (r"TERRASSE\s*\d*:?", "terrasse", True),
+        (r"JARDIN\s*\d*:?", "jardin", True),
+        (r"LOGGIA\s*\d*:?", "loggia", True),
+        (r"DRESSING", "dressing", True),
+        (r"PLACARD", "placard", True),
+        (r"CELLIER", "cellier", True),
+    ]
+
     def __init__(self):
-        """Initialise l'extracteur PyMuPDF."""
         self.patterns = self.PATTERNS
         self.option_keywords = self.OPTION_KEYWORDS
         self.room_patterns = self.ROOM_PATTERNS
-    
+
     def is_available(self) -> bool:
-        """
-        Verifie si PyMuPDF est disponible.
-        
-        Returns:
-            True si PyMuPDF peut etre utilise
-        """
         try:
             import fitz
             return True
         except ImportError:
             return False
-    
+
     def extract(self, pdf_path: str, force: bool = False) -> PyMuPDFExtractionResult:
-        """
-        Extrait le texte d'un fichier PDF.
-        
-        Args:
-            pdf_path: Chemin vers le fichier PDF
-            force: Re-extraire meme si deja fait
-            
-        Returns:
-            PyMuPDFExtractionResult avec les donnees extraites
-        """
-        import time
-        start_time = time.time()
-        
         try:
-            pdf_path = str(Path(pdf_path).resolve())
-            
-            # Ouvrir le PDF
+            logger.info(f"Processing PDF: {pdf_path}")
             doc = fitz.open(pdf_path)
-            
-            # Extraire le texte page par page
+            metadata = doc.metadata or {}
+
             full_text = ""
             raw_blocks = []
-            metadata = {}
-            
-            for page_num, page in enumerate(doc):
-                # Extraire le texte avec blocks pour avoir la structure
-                blocks = page.get_text("blocks")
-                page_text = page.get_text()
-                
-                full_text += f"\n--- Page {page_num + 1} ---\n"
-                full_text += page_text
-                
-                for block in blocks:
-                    if len(block) >= 4:
-                        raw_blocks.append({
-                            'page': page_num + 1,
-                            'text': block[4] if len(block) > 4 else str(block),
-                            'bbox': block[0:4],  # x0, y0, x1, y1
-                        })
-            
-            # Recuperer les metadonnees du PDF
-            metadata = {
-                'page_count': doc.page_count,
-                'metadata': doc.metadata,
-                'pdf_path': pdf_path,
-            }
-            
+
+            for page in doc:
+                full_text += page.get_text()
+                raw_blocks.extend(page.get_text("blocks"))
+
             doc.close()
-            
-            # Nettoyer le texte
-            cleaned_text = self._clean_text(full_text)
-            
-            # Parser les donnees de parcel
-            parcel_data = self._parse_parcel_data(cleaned_text)
-            
-            # Calculer la confiance basee sur les donnees trouvees
-            confidence = self._calculate_confidence(parcel_data)
-            
-            duration_ms = (time.time() - start_time) * 1000
-            
+
+            if not full_text.strip():
+                return PyMuPDFExtractionResult(
+                    success=False,
+                    error="No extractable text (scanned PDF?)"
+                )
+
+            cleaned = self._clean_text(full_text)
+            parsed = self._parse_parcel_data(cleaned)
+            confidence = self._calculate_confidence(parsed)
+
             return PyMuPDFExtractionResult(
                 success=True,
                 text=full_text,
-                cleaned_text=cleaned_text,
+                cleaned_text=cleaned,
+                parsed_data=parsed,
                 raw_blocks=raw_blocks,
                 metadata=metadata,
                 confidence=confidence,
             )
-            
+
         except Exception as e:
-            logger.error(f"Erreur extraction PyMuPDF: {e}")
-            return PyMuPDFExtractionResult(
-                success=False,
-                error=str(e),
-                confidence=0.0,
-            )
-    
+            logger.exception("Extraction failed")
+            return PyMuPDFExtractionResult(success=False, error=str(e))
+
     def _clean_text(self, text: str) -> str:
-        """
-        Nettoie le texte extrait pour faciliter le parsing.
-        
-        Args:
-            text: Texte brut extrait du PDF
-            
-        Returns:
-            Texte nettoye
-        """
-        if not text:
-            return ""
-        
-        # Remplacements de caracteres speciaux
-        replacements = {
-            '\u00A0': ' ',  # Espace insecable
-            '\u202F': ' ',  # Espace fine
-            '\u2000': ' ',  # Espace quadrat
-            '\u200B': '',   # Espace zero
-            '\u2009': ' ',  # Espace fine
-            '\u2007': ' ',  # Espace figure
-            '\u2008': ' ',  # Espace ponctuation
-            '\u2011': '-',  # Tiret insecable
-            '\u2013': '-',  # Tiret long
-            '\u2014': '-',  # Tiret cadratin
-            '\u2018': "'",  # Guillemet simple gauche
-            '\u2019': "'",  # Guillemet simple droite
-            '\u201C': '"',  # Guillemet double gauche
-            '\u201D': '"',  # Guillemet double droite
-            '\x0c': '\n',   # Saut de page
-            '\r\n': '\n',
-            '\r': '\n',
-        }
-        
-        cleaned = text
-        for old, new in replacements.items():
-            cleaned = cleaned.replace(old, new)
-        
-        # Normaliser les espaces multiples
-        cleaned = re.sub(r'[ \t]+', ' ', cleaned)
-        cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
-        
-        # Supprimer les lignes vides en double
-        cleaned = re.sub(r'\n\s*\n', '\n\n', cleaned)
-        
-        return cleaned.strip()
-    
-    def _parse_parcel_data(self, text: str) -> Dict[str, Any]:
-        """
-        Parse le texte nettoye pour extraire les donnees de parcel.
-        
-        Args:
-            text: Texte nettoye
-            
-        Returns:
-            Dict avec les donnees extraites
-        """
+        text = text.replace("\xa0", " ").replace("\r", "")
+        text = re.sub(r"[ \t]+", " ", text)
+        return text.strip()
+
+    def _extract_cartouche_block(self, text: str) -> Dict[str, str]:
         result = {}
-        
-        # Recherche par patterns
-        for field, patterns in self.patterns.items():
-            value = None
-            for pattern in patterns:
-                match = re.search(pattern, text, re.IGNORECASE)
-                if match:
-                    # Prendre le groupe capture le plus pertinent
-                    groups = [g for g in match.groups() if g]
-                    if groups:
-                        value = groups[-1]  # Dernier groupe capture
+        lines = text.split("\n")
+
+        for i, line in enumerate(lines):
+            line = line.strip()
+            m = re.match(r'^([A-Z]\d{1,3})$', line)
+            if m and len(line) >= 2:
+                excluded = ['RGT', 'DGT', 'WC', 'SDB', 'EP', 'VR', 'PF', 'SDE', 'BSO', 'FF', 'SO', 'GC']
+                if line.upper() not in excluded:
+                    result["parcelLabel"] = line
+                    result["appartement"] = line
+                    break
+
+        for i, line in enumerate(lines):
+            line = line.strip()
+
+            if re.match(r"^APPARTEMENT$", line, re.IGNORECASE):
+                for j in range(i + 1, min(i + 8, len(lines))):
+                    next_line = lines[j].strip()
+                    if not next_line:
+                        continue
+                    if re.match(r'^(BATIMENT|NIVEAU|TYPE|PLOT)$', next_line, re.IGNORECASE):
+                        continue
+                    m = re.match(r'^-?([A-Z]\d{1,3})$', next_line)
+                    if m:
+                        result["parcelLabel"] = m.group(1)
+                        result["appartement"] = m.group(1)
                         break
-            
-            if value:
-                result[field] = value
-        
-        # Detection avancee des surfaces et typologie
-        text_upper = text.upper()
-        
-        # Extraction surfaces détaillées D'ABORD
-        surface_detail = {}
-        total_habitable = 0.0
-        total_exterieur = 0.0
-        
-        for pattern, (key, room_type) in self.room_patterns.items():
-            matches = re.findall(pattern, text, re.IGNORECASE)
-            for i, match in enumerate(matches):
-                try:
-                    surface = float(match.replace(",", "."))
-                    actual_key = key.format(i+1) if "{}" in key else key
-                    surface_detail[actual_key] = surface
+
+            elif re.match(r"^(BATIMENT|PLOT)$", line, re.IGNORECASE):
+                if i + 1 < len(lines):
+                    val = lines[i + 1].strip()
+                    if val and len(val) <= 3 and not re.match(r'^(NB|Le|La|Les|Il|Pour|Dans)', val, re.IGNORECASE):
+                        result["batiment"] = val
+
+            elif re.match(r"^NIVEAU$", line, re.IGNORECASE) or re.match(r"^TYPE$", line, re.IGNORECASE):
+                for j in range(i + 1, min(i + 5, len(lines))):
+                    val = lines[j].strip()
+                    if not val:
+                        continue
                     
-                    if room_type == "exterieur":
-                        total_exterieur += surface
-                        # Mapper vers les champs standards
-                        if "balcon" in key:
-                            result['balcony'] = str(surface)
-                        elif "jardin" in key:
-                            result['garden'] = str(surface)
-                        elif "terrasse" in key:
-                            result['terrace'] = str(surface)
-                    else:
-                        total_habitable += surface
-                except ValueError:
-                    continue
+                    val = re.sub(r'^-?\s*', '', val)
+                    
+                    floor_match = re.match(r'^(\d+)(?:er|ème|e)?\s*étage$', val, re.IGNORECASE)
+                    if floor_match:
+                        result["niveau"] = val
+                        floor_num = floor_match.group(1)
+                        if floor_num == "0":
+                            result["floor"] = "RDC"
+                        else:
+                            result["floor"] = f"R+{floor_num}"
+                        break
+                    
+                    elif re.match(r'^R\+\d+$', val, re.IGNORECASE):
+                        result["niveau"] = val.upper()
+                        result["floor"] = val.upper()
+                        break
+                    
+                    elif re.match(r'^RDC$', val, re.IGNORECASE):
+                        result["niveau"] = "RDC"
+                        result["floor"] = "RDC"
+                        break
+                    
+                    elif re.match(r'^\d+$', val):
+                        result["niveau"] = val
+                        if val == "0":
+                            result["floor"] = "RDC"
+                        else:
+                            result["floor"] = f"R+{val}"
+                        break
+
+            elif re.match(r"^\d+\s*pi[èe]ces?$", line, re.IGNORECASE):
+                m = re.match(r"^(\d+)", line)
+                if m:
+                    result["typology"] = f"T{m.group(1)}"
+
+            if "SCCV" in line or "SCI" in line:
+                result["promoteur"] = line.strip()
+
+        return result
+
+    def _is_category_total(self, surface_detail: Dict[str, float], candidate_value: float, 
+                          room_key: str, tolerance: float = 0.5) -> bool:
+        """
+        Check if a value is likely a category total (sum of other rooms).
         
+        Example: Réception 41.97 = Séjour 34.65 + Cuisine 7.32
+        """
+        # Don't check for very small values or specific room types
+        if candidate_value < 10:
+            return False
+        
+        # These room types are commonly used as category labels
+        category_rooms = ["reception", "sejour"]
+        if room_key not in category_rooms:
+            return False
+        
+        # Check if candidate value equals sum of any 2+ existing rooms
+        values = list(surface_detail.values())
+        
+        # Try pairs
+        for i, val1 in enumerate(values):
+            for val2 in values[i+1:]:
+                total = val1 + val2
+                if abs(total - candidate_value) < tolerance:
+                    logger.info(f"Detected category total: {room_key} {candidate_value} ≈ {val1} + {val2}")
+                    return True
+        
+        # Try triples
+        for i, val1 in enumerate(values):
+            for j, val2 in enumerate(values[i+1:], i+1):
+                for val3 in values[j+1:]:
+                    total = val1 + val2 + val3
+                    if abs(total - candidate_value) < tolerance:
+                        logger.info(f"Detected category total: {room_key} {candidate_value} ≈ {val1} + {val2} + {val3}")
+                        return True
+        
+        return False
+
+    def _parse_parcel_data(self, text: str) -> Dict[str, Any]:
+        result = {}
+
+        # Generic patterns
+        for field_name, patterns in self.PATTERNS.items():
+            for pattern in patterns:
+                match = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
+                if match:
+                    value = match.group(1) if match.groups() else match.group(0)
+                    result[field_name] = self._normalize_value(field_name, value)
+                    break
+
+        # Cartouche
+        cartouche = self._extract_cartouche_block(text)
+        result.update(cartouche)
+
+        # Room surfaces
+        surface_detail = {}
+        lines = text.split("\n")
+        
+        # Find stopping point
+        stop_index = len(lines)
+        for i, line in enumerate(lines):
+            if re.search(r"(?:TOTAL\s+)?SURFACE\s+HABITABLE", line, re.IGNORECASE):
+                stop_index = min(i + 15, len(lines))
+                break
+
+        for i, line in enumerate(lines):
+            if i >= stop_index:
+                break
+                
+            line_clean = line.strip()
+
+            for pattern, key, has_surface in self.room_patterns:
+                if re.search(pattern, line_clean, re.IGNORECASE):
+                    if has_surface and i + 1 < len(lines):
+                        next_line = lines[i + 1].strip()
+                        m = re.search(r'(\d+[.,]\d+)', next_line)
+                        if m:
+                            val = self._safe_float(m.group(1))
+                            if val:
+                                # Check if this is a category total
+                                if self._is_category_total(surface_detail, val, key):
+                                    logger.info(f"Skipping category total: {key} = {val}")
+                                    break
+                                
+                                # Always index bedrooms
+                                if key == "chambre":
+                                    count = 1
+                                    while f"{key}_{count}" in surface_detail:
+                                        count += 1
+                                    surface_detail[f"{key}_{count}"] = val
+                                # Handle duplicates
+                                elif key in surface_detail:
+                                    count = 1
+                                    while f"{key}_{count}" in surface_detail:
+                                        count += 1
+                                    surface_detail[f"{key}_{count}"] = val
+                                else:
+                                    surface_detail[key] = val
+                    break
+
         if surface_detail:
-            result['surfaceDetail'] = surface_detail
-        
-        # Détection typologie via nombre de chambres detectees dans les surfaces
-        nb_chambres_details = len([k for k in surface_detail.keys() if 'chambre' in k])
-        
-        if nb_chambres_details > 0:
-            result['typology'] = f"T{nb_chambres_details + 1}"
-        else:
-            # Fallback regex simple si pas de details trouves
-            nb_chambres_regex = len(re.findall(r"CHAMBRE\s+\d+", text, re.IGNORECASE))
-            if nb_chambres_regex > 0:
-                 result['typology'] = f"T{nb_chambres_regex + 1}"
-        
-        # Surface habitable totale (priorité au texte explicite, sinon somme)
-        
-        # Surface habitable totale (priorité au texte explicite, sinon somme)
-        # Surface habitable totale (priorité au texte explicite, sinon somme)
-        # Note: 'living_space' peut deja etre rempli par les patterns regex generiques (mais on les a restreints)
-        
-        # 1. Chercher explicitement "Surface Habitable" ou equivalent
-        living_space_match = re.search(r"SURFACE\s+HABITABLE\s*[:]?\s*(\d+(?:\.\d+)?)", text_upper)
-        if living_space_match:
-             result['living_space'] = living_space_match.group(1)
-        # 2. Sinon, utiliser la somme des pieces habitables si disponible
-        elif total_habitable > 0:
-             result['living_space'] = f"{total_habitable:.2f}"
-        
-        # Si toujours rien, on garde ce que les patterns generiques ont trouve (s'ils ont trouve qqch)
+            result["surfaceDetail"] = surface_detail
             
-        # Détection étage amelioree
-        if 'floor' not in result:
-            if "RDC" in text_upper or "REZ-DE-CHAUSSEE" in text_upper:
-                result['floor'] = "RDC"
-            elif "R+1" in text_upper or "1ER" in text_upper:
-                result['floor'] = "R+1"
-            elif "R+2" in text_upper or "2EME" in text_upper:
-                result['floor'] = "R+2"
-        
-        # Detection ref (fallback parcelLabel)
-        if 'parcelLabel' not in result:
-             match_ref = re.search(r'(B\d+|A\d+|T\d+)', text_upper)
-             if match_ref:
-                 result['parcelLabel'] = match_ref.group(1)
-        
-        # Detection des options par mots-cles
-        options_found = []
+            # Calculate totals
+            if "living_space" in result:
+                try:
+                    total_hab = float(result["living_space"].replace(",", "."))
+                    surface_detail["total_habitable"] = total_hab
+                except:
+                    pass
+            
+            # Calculate total_annexe (outdoor spaces only)
+            total_annexe = 0.0
+            for k, v in surface_detail.items():
+                if any(k.startswith(outdoor) for outdoor in ["balcon", "terrasse", "jardin", "loggia"]):
+                    total_annexe += v
+            if total_annexe > 0:
+                surface_detail["total_annexe"] = round(total_annexe, 2)
+
+        # Calculate typology from bedroom count if not found
+        if "typology" not in result and surface_detail:
+            bedroom_count = sum(1 for k in surface_detail.keys() if k.startswith("chambre"))
+            if bedroom_count > 0:
+                result["typology"] = f"T{bedroom_count + 1}"
+                logger.info(f"Calculated typology from {bedroom_count} bedrooms: {result['typology']}")
+
+        # Options
         text_lower = text.lower()
-        
-        for option, keywords in self.option_keywords.items():
+        options = []
+        for opt, keywords in self.OPTION_KEYWORDS.items():
             for keyword in keywords:
-                if keyword in text_lower:
-                    options_found.append(option)
+                pattern = rf"\b{keyword}\b.{{0,50}}?(\d+[.,]\d+)"
+                match = re.search(pattern, text_lower, re.IGNORECASE)
+                
+                in_surface_detail = any(
+                    keyword in k.lower() for k in surface_detail.keys()
+                ) if surface_detail else False
+                
+                if match or in_surface_detail:
+                    options.append(opt)
                     break
         
-        if options_found:
-            result['options'] = options_found
-        
+        if options:
+            result["options"] = options
+
         return result
-    
-    def _calculate_confidence(self, parcel_data: Dict[str, Any]) -> float:
-        """
-        Calcule un score de confiance base sur les donnees trouvees.
+
+    def _normalize_value(self, field: str, value: str) -> str:
+        value = value.strip()
         
-        Args:
-            parcel_data: Donnees extraites
-            
-        Returns:
-            Score de confiance entre 0 et 1
-        """
-        if not parcel_data:
+        if field == "living_space":
+            return value.replace(",", ".")
+        
+        if field == "floor":
+            if re.match(r'^\d+(?:er|ème|e)?\s*étage$', value, re.IGNORECASE):
+                floor_num = re.match(r'^(\d+)', value).group(1)
+                if floor_num == "0":
+                    return "RDC"
+                return f"R+{floor_num}"
+            return value.upper()
+        
+        if field == "typology":
+            if value.isdigit():
+                return f"T{value}"
+            return value.upper()
+        
+        return value.upper()
+
+    def _safe_float(self, value: str) -> Optional[float]:
+        try:
+            return float(value.replace(",", "."))
+        except Exception:
+            return None
+
+    def _calculate_confidence(self, data: Dict[str, Any]) -> float:
+        if not data:
             return 0.0
+        score = 0
         
-        # Champs attendus pour un bon score
-        important_fields = ['parcelLabel', 'living_space', 'typology', 'floor']
-        optional_fields = ['orientation', 'terrace', 'balcony', 'garden', 'price', 'parking', 'cellar']
+        critical_fields = ["parcelLabel", "living_space", "typology", "floor"]
+        score += sum(1 for f in critical_fields if f in data) * 0.2
         
-        score = 0.0
-        
-        # Points pour les champs importants trouves
-        for field in important_fields:
-            if field in parcel_data:
-                score += 0.20
-        
-        # Points pour les champs optionnels
-        for field in optional_fields:
-            if field in parcel_data:
+        if "surfaceDetail" in data:
+            room_count = len(data["surfaceDetail"])
+            if room_count >= 5:
+                score += 0.15
+            elif room_count >= 3:
+                score += 0.10
+            else:
                 score += 0.05
         
-        # Bonus pour le nombre total de champs
-        total_fields = len(parcel_data)
-        if total_fields >= 5:
-            score += 0.10
-        elif total_fields >= 3:
+        if "options" in data:
             score += 0.05
         
         return min(score, 1.0)
-    
+
     def to_parcel_data(self, extraction_result: PyMuPDFExtractionResult) -> ParcelData:
-        """
-        Convertit le resultat d'extraction en ParcelData normalise.
-        
-        Args:
-            extraction_result: Resultat de l'extraction
-            
-        Returns:
-            ParcelData normalise
-        """
-        raw_data = {}
-        
-        if extraction_result.success:
-            # Utiliser les donnees parsees
-            raw_data = self._parse_parcel_data(extraction_result.cleaned_text)
-        
-        # Normaliser les donnees
-        normalized = normalize_parcel_data(raw_data)
-        
-        # Preparer surfaceDetail
+        raw_data = extraction_result.parsed_data or {}
+
+        option_dict = DEFAULT_OPTIONS.copy()
+        for opt in raw_data.get("options", []):
+            if opt in option_dict:
+                option_dict[opt] = True
+
+        custom = {}
+        for k in ["promoteur", "batiment", "niveau", "appartement"]:
+            if raw_data.get(k):
+                custom[k] = raw_data[k]
+
         surface_detail = {}
-        if normalized.get('terrace'):
-            surface_detail['terrasse'] = float(normalized.get('terrace', 0))
-        if normalized.get('balcony'):
-            surface_detail['balcon'] = float(normalized.get('balcony', 0))
-        if normalized.get('garden'):
-            surface_detail['jardin'] = float(normalized.get('garden', 0))
-            
-        # Ajouter les details de pieces s'ils existent (venant de la logic custom)
-        if raw_data.get('surfaceDetail'):
-            surface_detail.update(raw_data.get('surfaceDetail'))
-        if normalized.get('balcony'):
-            surface_detail['balcon'] = float(normalized.get('balcony', 0))
-        if normalized.get('garden'):
-            surface_detail['jardin'] = float(normalized.get('garden', 0))
-        
-        # Preparer les options
-        options = normalized.get('options', [])
-        option_dict = {}
-        if 'terrace' in options:
-            option_dict['terrasse'] = True
-        if 'balcony' in options:
-            option_dict['balcon'] = True
-        if 'garden' in options:
-            option_dict['jardin'] = True
-        if 'parking' in options:
-            option_dict['parking'] = True
-        if 'cellar' in options:
-            option_dict['cave'] = True
-            
-        # Synchro: Si une surface est detectee, l'option est implicitement vraie
-        if surface_detail.get('balcon', 0) > 0:
-            option_dict['balcon'] = True
-        if surface_detail.get('terrasse', 0) > 0:
-            option_dict['terrasse'] = True
-        if surface_detail.get('jardin', 0) > 0:
-            option_dict['jardin'] = True
-        
-        # Creer un objet ParcelData
+        for k, v in raw_data.get("surfaceDetail", {}).items():
+            if isinstance(v, (int, float)):
+                surface_detail[k] = float(v)
+            elif isinstance(v, str):
+                try:
+                    surface_detail[k] = float(v.replace(",", "."))
+                except:
+                    pass
+
         return ParcelData(
-            parcelLabel=normalized.get('parcelLabel', normalized.get('parcel_label', '')),
-            typology=normalized.get('typology', ''),
-            floor=normalized.get('floor', ''),
-            living_space=normalized.get('living_space', ''),
-            orientation=normalized.get('orientation', ''),
-            price=normalized.get('price', ''),
+            parcelLabel=raw_data.get("parcelLabel", ""),
+            typology=raw_data.get("typology", ""),
+            floor=raw_data.get("floor", ""),
+            living_space=raw_data.get("living_space", ""),
             surfaceDetail=surface_detail,
-            option=option_dict if option_dict else DEFAULT_OPTIONS.copy(),
+            option=option_dict,
+            customData=custom if custom else None,
         )
-    
-    def extract_table_like_data(self, pdf_path: str) -> List[Dict[str, Any]]:
-        """
-        Extrait les donnees en format tableau du PDF.
-        Utile pour les grilles de lots.
-        
-        Args:
-            pdf_path: Chemin vers le fichier PDF
-            
-        Returns:
-            Liste de dictionnaires representant les lignes du tableau
-        """
-        doc = fitz.open(pdf_path)
-        table_rows = []
-        
-        for page in doc:
-            # Essayer d'extraire en format dict/JSON
-            tables = page.get_text("dict")
-            
-            for block in tables.get("blocks", []):
-                if block.get("type") == 0:  # Type texte
-                    for line in block.get("lines", []):
-                        row_data = {}
-                        for span in line.get("spans", []):
-                            text = span.get("text", "").strip()
-                            if text:
-                                # Essayer de parser les donnees de la ligne
-                                parsed = self._parse_parcel_data(text)
-                                if parsed:
-                                    row_data.update(parsed)
-                        
-                        if row_data:
-                            table_rows.append(row_data)
-        
-        doc.close()
-        return table_rows

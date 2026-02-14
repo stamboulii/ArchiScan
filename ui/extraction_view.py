@@ -184,6 +184,7 @@ def render_extraction_results(extractor):
                     st.success(
                         f"Extraction validee et sauvegardee pour l'entrainement ML! (ID: {extraction_id})"
                     )
+                    st.rerun()
                 else:
                     st.error("Impossible de valider: donnees manquantes")
                     

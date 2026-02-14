@@ -572,3 +572,11 @@
 {"timestamp": "2026-02-11T10:32:52.657102", "session_id": "session_20260211_103252", "event": "method_attempt", "method": "claude", "success": true, "error": null, "result_keys": null}
 {"timestamp": "2026-02-11T10:32:52.675236", "session_id": "session_20260211_103252", "event": "method_attempt", "method": "tesseract", "success": false, "error": "OCR failed", "result_keys": null}
 {"timestamp": "2026-02-11T10:32:52.675553", "session_id": "session_20260211_103252", "event": "extraction_end", "success": false, "extraction_id": null, "error": "Toutes les methodes ont echoue", "duration_ms": 0}
+{"timestamp": "2026-02-13T08:57:25.493920", "session_id": "session_20260213_085725", "event": "method_attempt", "method": "tesseract", "success": true, "error": null, "result_keys": ["parcelLabel", "_extraction_meta"]}
+{"timestamp": "2026-02-13T08:57:25.525103", "session_id": "session_20260213_085725", "event": "method_attempt", "method": "claude", "success": true, "error": null, "result_keys": null}
+{"timestamp": "2026-02-13T08:57:25.553342", "session_id": "session_20260213_085725", "event": "method_attempt", "method": "tesseract", "success": false, "error": "OCR failed", "result_keys": null}
+{"timestamp": "2026-02-13T08:57:25.553909", "session_id": "session_20260213_085725", "event": "extraction_end", "success": false, "extraction_id": null, "error": "Toutes les methodes ont echoue", "duration_ms": 0}
+{"timestamp": "2026-02-13T08:57:35.688152", "session_id": "session_20260213_085735", "event": "method_attempt", "method": "tesseract", "success": true, "error": null, "result_keys": ["parcelLabel", "_extraction_meta"]}
+{"timestamp": "2026-02-13T08:57:35.711452", "session_id": "session_20260213_085735", "event": "method_attempt", "method": "claude", "success": true, "error": null, "result_keys": null}
+{"timestamp": "2026-02-13T08:57:35.736093", "session_id": "session_20260213_085735", "event": "method_attempt", "method": "tesseract", "success": false, "error": "OCR failed", "result_keys": null}
+{"timestamp": "2026-02-13T08:57:35.736436", "session_id": "session_20260213_085735", "event": "extraction_end", "success": false, "extraction_id": null, "error": "Toutes les methodes ont echoue", "duration_ms": 0}

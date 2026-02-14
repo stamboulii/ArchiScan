@@ -21,7 +21,12 @@ def export_to_json(data: dict) -> str:
     clean = {}
     for key, value in data.items():
         if isinstance(value, dict):
-            clean[key] = {k: v for k, v in value.items() if not k.startswith('_')}
+            # Creer une copie sans duplicater la cle comme champ
+            parcel_dict = {k: v for k, v in value.items() if not k.startswith('_')}
+            # Ne pas dupliquer parcelLabel comme champ s'il est egal a la cle
+            if parcel_dict.get('parcelLabel') == key:
+                parcel_dict.pop('parcelLabel', None)
+            clean[key] = parcel_dict
         else:
             clean[key] = value
     return json.dumps(clean, indent=2, ensure_ascii=False)
@@ -87,7 +92,11 @@ def _display_clean_json():
     display_data = {}
     for k, v in st.session_state.all_parcels.items():
         if isinstance(v, dict):
-            display_data[k] = {dk: dv for dk, dv in v.items() if not dk.startswith('_')}
+            parcel_dict = {dk: dv for dk, dv in v.items() if not dk.startswith('_')}
+            # Ne pas dupliquer parcelLabel comme champ s'il est egal a la cle
+            if parcel_dict.get('parcelLabel') == k:
+                parcel_dict.pop('parcelLabel', None)
+            display_data[k] = parcel_dict
         else:
             display_data[k] = v
     st.json(display_data)
