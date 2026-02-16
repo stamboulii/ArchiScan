@@ -168,6 +168,7 @@ PHASE_TESSERACT = "tesseract"
 PHASE_CLAUDE = "claude"
 PHASE_PYMUPDF = "pymupdf"
 PHASE_ML = "ml"
+PHASE_SUPER = "super"  # SuperExtractor: PyMuPDF + OCR + Validation
 DEFAULT_PHASE = PHASE_AUTO
 
 # Seuils d'entrainement

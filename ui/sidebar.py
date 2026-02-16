@@ -113,12 +113,25 @@ def _render_method_selector():
         "Claude Vision": "claude",
         "PyMuPDF (PDF direct)": "pymupdf",
         "Tesseract OCR": "tesseract",
+        "Super Extractor (PyMuPDF + OCR + Validation)": "super",
         "ML Custom": "ml"
     }
+    
+    options_list = list(method_options.keys())
+    
+    # Get current index based on stored force_method
+    current_method = st.session_state.get('force_method')
+    current_index = 0
+    for i, (label, value) in enumerate(method_options.items()):
+        if value == current_method:
+            current_index = i
+            break
+    
     selected = st.selectbox(
         "Forcer une methode",
-        list(method_options.keys()),
-        index=0
+        options_list,
+        index=current_index,
+        key="method_selector"
     )
     new_method = method_options[selected]
     if new_method != st.session_state.force_method:
@@ -127,5 +140,6 @@ def _render_method_selector():
             api_key=st.session_state.api_key or None,
             force_method=new_method
         )
-        # Message pour informer l'utilisateur
-        st.success(f"Methode changed to: {selected}")
+        # Trigger re-extraction if there's existing data
+        if st.session_state.extracted_data is not None:
+            st.session_state.needs_re_extraction = True

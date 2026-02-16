@@ -19,6 +19,7 @@ from ..core.config import (
     PHASE_CLAUDE,
     PHASE_ML,
     PHASE_PYMUPDF,
+    PHASE_SUPER,
     ML_CONFIDENCE_THRESHOLD,
 )
 from ..core.exceptions import ExtractionError
@@ -60,9 +61,18 @@ class HybridExtractor:
         self._tesseract = None
         self._claude = None
         self._pymupdf = None
+        self._super_extractor = None
         self._training_store = None
         self._data_store = None
         self._api_key = api_key
+    
+    @property
+    def super_extractor(self):
+        """SuperExtractor: PyMuPDF + OCR + Validation math"""
+        if self._super_extractor is None:
+            from .super_extractor.super_extractor import SuperExtractor
+            self._super_extractor = SuperExtractor()
+        return self._super_extractor
     
     @property
     def data_store(self):
@@ -178,6 +188,8 @@ class HybridExtractor:
             return 4
         elif self.force_method == PHASE_ML:
             return 3
+        elif self.force_method == PHASE_SUPER:
+            return 5  # SuperExtractor - nouvelle phase
         
         # Auto-detection
         if self.claude_extractor.is_available():
@@ -241,6 +253,13 @@ class HybridExtractor:
                 'method': 'pymupdf',
                 'accuracy': '70-90%',
             },
+            5: {
+                'phase': 5,
+                'name': 'SuperExtractor - Extraction Complete',
+                'description': 'Extraction complete avec PyMuPDF + OCR + Validation',
+                'method': 'super',
+                'accuracy': '85-95%',
+            },
         }
         return descriptions.get(phase, descriptions[0])
     
@@ -275,6 +294,15 @@ class HybridExtractor:
         
         if method == PHASE_CLAUDE:
             result = self._extract_with_claude(image_path)
+        elif method == PHASE_SUPER:
+            # SuperExtractor: PyMuPDF + OCR + Validation
+            result = self._extract_with_super(image_path)
+        elif method == PHASE_PYMUPDF:
+            # PyMuPDF only
+            if image_path.lower().endswith('.pdf'):
+                result = self.extract_from_pdf(image_path)
+            else:
+                result = self._extract_with_tesseract(image_path)
         elif method == PHASE_ML:
             # ML Custom pas encore entraine - fallback vers Tesseract
             logger.warning("ML Custom pas encore disponible, fallback vers Tesseract")
@@ -315,6 +343,10 @@ class HybridExtractor:
         start_time = time.time()
         
         try:
+            # Check if SuperExtractor is requested
+            if self.force_method == PHASE_SUPER:
+                return self._extract_with_super(pdf_path)
+            
             # Verifier si PyMuPDF est disponible
             if not self.pymupdf_extractor.is_available():
                 raise ExtractionError("PyMuPDF n'est pas disponible")
@@ -416,6 +448,48 @@ class HybridExtractor:
             return self._extract_with_tesseract(image_path)
         else:
             raise ExtractionError(f"Methode d'extraction non supportee: {method}")
+    
+    def _extract_with_super(self, image_path: str) -> Dict:
+        """
+        Extraction avec SuperExtractor: PyMuPDF + OCR + Validation math.
+        
+        Args:
+            image_path: Chemin vers l'image ou PDF
+            
+        Returns:
+            Dict avec les donnees extraites
+        """
+        import time
+        start_time = time.time()
+        
+        try:
+            # Utiliser SuperExtractor
+            extraction_result = self.super_extractor.extract(image_path)
+            
+            # Convert ExtractionResult to dict via legacy format
+            result = extraction_result.to_legacy_format()
+            
+            # Ajouter les metadonnees
+            duration_ms = (time.time() - start_time) * 1000
+            
+            # Verifier si validation OK
+            first_key = list(result.keys())[0] if result else None
+            validation = result.get(first_key, {}).get('_validation') if first_key else None
+            
+            # Creer la structure standard
+            extracted_data = result
+            extracted_data['_extraction_meta'] = {
+                'method': PHASE_SUPER,
+                'confidence': 0.9 if not validation or validation.get('is_valid', False) else 0.7,
+                'duration_ms': duration_ms,
+                'validation': validation
+            }
+            
+            return extracted_data
+            
+        except Exception as e:
+            logger.error(f"Erreur SuperExtractor: {e}")
+            raise ExtractionError(f"Echec SuperExtractor: {str(e)}")
     
     def _extract_with_tesseract(self, image_path: str) -> Dict:
         """Extraction avec Tesseract OCR."""

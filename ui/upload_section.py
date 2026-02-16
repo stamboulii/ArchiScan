@@ -259,18 +259,18 @@ def _render_batch_results(extractor):
 
 def _run_extraction(extractor, temp_path: str):
     """Execute l'extraction et met a jour le session state."""
-    from config import DEBUG_DIR, PHASE_PYMUPDF
+    from config import DEBUG_DIR, PHASE_PYMUPDF, PHASE_SUPER
     
     # Stocker le chemin du fichier pour permettre re-extraction
     st.session_state.last_uploaded_file = temp_path
     
     with st.spinner("Extraction en cours..."):
         try:
-            # Verifier si on doit utiliser PyMuPDF
+            # Verifier si on doit utiliser PyMuPDF ou SuperExtractor (both for PDFs)
             force_method = st.session_state.get('force_method')
             
-            # Utiliser extract_from_pdf pour les fichiers PDF UNIQUEMENT si PyMuPDF est selectionne
-            if temp_path.lower().endswith('.pdf') and force_method == PHASE_PYMUPDF:
+            # Utiliser extract_from_pdf pour les fichiers PDF UNIQUEMENT si PyMuPDF ou Super est selectionne
+            if temp_path.lower().endswith('.pdf') and force_method in [PHASE_PYMUPDF, PHASE_SUPER]:
                 result = extractor.extract_from_pdf(temp_path)
             else:
                 result = extractor.extract_from_image(temp_path)
