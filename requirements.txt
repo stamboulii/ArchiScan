@@ -7,7 +7,7 @@
 # === Core Dependencies ===
 
 pytesseract              # OCR avec Tesseract
-opencv-python            # Pretraitement d'images
+opencv-python-headless           # Pretraitement d'images
 Pillow                   # Manipulation d'images
 numpy                    # Operations numeriques (sans contrainte de version)
 
