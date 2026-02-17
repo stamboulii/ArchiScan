@@ -29,17 +29,23 @@ class RoomNormalizer:
             (r"^(LIVING|ESPACE)\s*/?\s*(CUISINE|KITCHEN)",
             "sejour_cuisine", RoomType.LIVING_KITCHEN, False),
 
-            # SDB/WC combiné (AVANT les patterns séparés)
-            (r"^(SDB|SALLE\s*DE\s*BAINS?)\s*/\s*(WC|W\.?C\.?|TOILETT?ES?)$",
+            # SDB/WC combiné
+            (r"^(SDB\s*/\s*WC|SDB\s*WC|SALLE\s*DE\s*BAINS?\s*/?\s*WC)$",
             "salle_de_bain", RoomType.BATHROOM, False),
-            (r"^(WC|W\.?C\.?)\s*/\s*(SDB|SALLE\s*DE\s*BAINS?)$",
+            (r"^(WC\s*/\s*SDB|WC\s*SDB)$",
             "salle_de_bain", RoomType.BATHROOM, False),
+
+            # SDE/WC combiné (salle d'eau + WC)
+            (r"^(SDE\s*/\s*WC|SDE\s*WC|SALLE\s*D['\u2019]?\s*EAU\s*/?\s*WC)$",
+            "salle_d_eau", RoomType.SHOWER_ROOM, False),
+            (r"^(WC\s*/\s*SDE|WC\s*SDE)$",
+            "salle_d_eau", RoomType.SHOWER_ROOM, False),
 
             # ══════════════════════════════════════════
             # RÉCEPTION (distinct de séjour)
             # ══════════════════════════════════════════
             (r"^(RECEPTION|R[ÉE]CEPTION|PIECE\s*DE\s*RECEPTION)$",
-            "reception", RoomType.RECEPTION, False),
+             "reception", RoomType.RECEPTION, False),
 
             # ══════════════════════════════════════════
             # SÉJOUR / SALON
@@ -128,7 +134,17 @@ class RoomNormalizer:
             # ══════════════════════════════════════════
             # EXTÉRIEUR - BALCON
             # ══════════════════════════════════════════
-            (r"^BALCON\s*(\d*)$", "balcon", RoomType.BALCONY, True),
+            (r"^BALCON(?:Y)?\s*:?\s*(\d*)$", "balcon{n}", RoomType.BALCONY, True),
+            (r"^BALCON:\s*(\d+[\.,]\d+)", "balcon", RoomType.BALCONY, True),
+            (r"^BALCON\s*(\d+)$", "balcon_{n}", RoomType.BALCONY, True),
+            
+            # ══════════════════════════════════════════
+            # EXTÉRIEUR - JARDIN
+            # ══════════════════════════════════════════
+            (r"^JARDIN\s*:?\s*(\d+[\.,]\d+)", "jardin", RoomType.GARDEN, True),
+            (r"^JARDIN\s*(\d+)$", "jardin", RoomType.GARDEN, True),
+            (r"^BALCON:\s*(\d+[\.,]\d+)", "balcon", RoomType.BALCONY, True),
+            (r"^BALCON\s*(\d+)$", "balcon_{n}", RoomType.BALCONY, True),
 
             # ══════════════════════════════════════════
             # EXTÉRIEUR - TERRASSE
@@ -202,7 +218,8 @@ class RoomNormalizer:
                     if number:
                         norm_name = name_template.replace("{n}", str(number))
                     else:
-                        norm_name = name_template.replace("_{n}", "")
+                        # Remove both _{n} and {n}
+                        norm_name = name_template.replace("_{n}", "").replace("{n}", "")
                 else:
                     norm_name = name_template
 

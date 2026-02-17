@@ -135,8 +135,16 @@ class SuperExtractor:
             rooms = self._rooms_from_table(spatial_rows, "spatial")
             logger.info(f"  ✅ {len(rooms)} pièces depuis tableau spatial")
 
-        # Priorité 2: regex sur texte PyMuPDF
-        if len(rooms) < 3:
+        # Priorité 2: regex sur texte PyMuPDF (si spatial insuffisant)
+        # Check if spatial extraction found enough rooms
+        spatial_calc = sum(r.surface for r in rooms)
+        # Trigger regex if:
+        # - Less than 10 rooms from spatial, OR
+        # - Surface is less than typical (e.g., < 110m² for a typical apartment)
+        # This helps find missing rooms like WC, SDB, CHAMBRE 1 that don't have labels
+        needs_regex = len(rooms) < 10 or spatial_calc < 110
+        
+        if needs_regex and text_data["text_pymupdf"]:
             self.normalizer.reset()
             rooms_regex = self._rooms_from_regex(
                 text_data["text_pymupdf"], "pymupdf"
@@ -195,9 +203,22 @@ class SuperExtractor:
 
 
         # ── ÉTAPE 6: Typology + property type ─────────────────
-        result.typology = (
-            meta.get("typology_hint") or self._detect_typology(rooms)
-        )
+        # Prefer room-based detection over metadata hint (more reliable)
+        room_typology = self._detect_typology(rooms)
+        meta_typology = meta.get("typology_hint", "")
+        
+        # Use meta hint only if it seems reasonable (not empty, matches bedroom count)
+        bedrooms = sum(1 for r in rooms if r.room_type == RoomType.BEDROOM)
+        if meta_typology and meta_typology != room_typology:
+            # Check if meta hint is close to what we'd expect
+            expected_from_rooms = f"T{bedrooms + 1}" if bedrooms > 0 else "Studio"
+            if meta_typology == expected_from_rooms:
+                result.typology = meta_typology
+            else:
+                logger.info(f"  ℹ️ Typology: meta_hint={meta_typology}, room_calc={room_typology}, using={room_typology}")
+                result.typology = room_typology
+        else:
+            result.typology = room_typology
         result.property_type = self._detect_property_type(rooms)
 
         # ── ÉTAPE 7: Validation ───────────────────────────────
@@ -392,7 +413,12 @@ class SuperExtractor:
             type_key = (r.room_type, r.room_number)
             if type_key in type_index:
                 existing = type_index[type_key]
-                # Vérifie que les surfaces sont proches (même pièce)
+                # Prefer spatial source over regex, regardless of surface difference
+                # This prevents duplicates from multi-apartment PDFs
+                if existing.source == "spatial":
+                    logger.debug(f"  Doublon SKIP (spatial优先): '{r.name_raw}' vs '{existing.name_raw}'")
+                    continue  # Skip - keep spatial
+                # If both are regex, check if surfaces are close
                 if abs(r.surface - existing.surface) < 0.5:
                     logger.debug(
                         f"  Doublon détecté: '{r.name_raw}' = '{existing.name_raw}'"
@@ -437,6 +463,10 @@ class SuperExtractor:
         return cleaned
 
     def _detect_typology(self, rooms):
+        """
+        Detect typology: T1, T2, T3, T4, T5, etc.
+        Tn = n rooms (bedrooms) + living room
+        """
         bedrooms = sum(1 for r in rooms if r.room_type == RoomType.BEDROOM)
         if bedrooms == 0:
             has_living = any(
@@ -447,6 +477,7 @@ class SuperExtractor:
                 for r in rooms
             )
             return "Studio" if has_living else "T1"
+        # T2 = 1 bedroom + living, T3 = 2 bedrooms + living, etc.
         return f"T{bedrooms + 1}"
 
     def _detect_property_type(self, rooms):
@@ -491,7 +522,7 @@ class SuperExtractor:
     def _final_dedup(self, rooms):
         """
         Dédoublonnage final: supprime les pièces avec même type + même numéro + même surface.
-        Garde celle avec la meilleure confiance.
+        Pour les chambres avec numéro différent, garde les deux.
         """
         seen = {}  # (room_type, room_number, surface_arrondie) → ExtractedRoom
         deduped = []
@@ -499,6 +530,7 @@ class SuperExtractor:
         for r in rooms:
             # Clé incluant le numéro de pièce pour différencier chambre_1 et chambre_2
             room_num = r.room_number if r.room_number else 0
+            # Utiliser surface arrondie à 1 décimale pour comparaison
             key = (r.room_type, room_num, round(r.surface, 1))
 
             if key in seen:
@@ -537,17 +569,74 @@ class SuperExtractor:
         if diff <= 1.0:
             return rooms
 
-        if calc > living_space * 1.15:
+        # Also check for essential rooms that should always be kept
+        essential_types = {"wc", "salle_de_bain", "salle_d_eau", "entree", "circulation", "storage"}
+        essential_rooms = [r for r in interior if r.name_normalized.split("_")[0] in essential_types]
+        
+        # Identify rooms from spatial extraction (more reliable)
+        spatial_sources = {r.source for r in rooms if r.source == "spatial"}
+        spatial_rooms = {r.name_normalized for r in rooms if r.source == "spatial"}
+        
+        if calc > living_space * 1.10:
             logger.info(
                 f"  🔍 Multi-appart détecté: calc={calc:.2f} >> "
                 f"declared={living_space:.2f}. Filtrage..."
             )
-            best = self._find_best_subset(interior, living_space)
+            
+            # First try to find subset that includes spatial rooms (they're more reliable)
+            if spatial_rooms:
+                # Filter interior to prioritize rooms that exist in spatial extraction
+                spatial_priority = []
+                other_rooms = []
+                for r in interior:
+                    base_name = r.name_normalized.split("_")[0]
+                    # Check if this room type exists in spatial
+                    if any(spatial_name.split("_")[0] == base_name for spatial_name in spatial_rooms):
+                        spatial_priority.append(r)
+                    else:
+                        other_rooms.append(r)
+                
+                # Try finding best subset prioritizing spatial rooms
+                best = self._find_best_subset(spatial_priority + other_rooms, living_space)
+            else:
+                best = self._find_best_subset(interior, living_space)
             if best:
-                # Filtrer les extérieurs aussi: garder seulement
-                # le nombre raisonnable (pas 4 balcons pour 1 appart)
-                filtered_ext = self._filter_exteriors(exterior)
-                result = best + filtered_ext
+                # Always keep essential rooms (WC, SDB, entrance, etc.)
+                essential_in_best = {r.name_normalized.split("_")[0] for r in best}
+                missing_essential = [r for r in essential_rooms 
+                                   if r.name_normalized.split("_")[0] not in essential_in_best]
+                
+                if missing_essential:
+                    logger.info(f"  🔧 Ajout {len(missing_essential)} pièces essentielles: "
+                              f"{[r.name_normalized for r in missing_essential]}")
+                    best = best + missing_essential
+                
+                # Keep only ONE room per type+number combination
+                # This removes duplicates from multi-apartment extraction
+                # Prefer: 1) spatial source, 2) larger surface
+                by_type_num = {}
+                for r in best:
+                    key = r.name_normalized  # Use full normalized name as key
+                    if key not in by_type_num:
+                        by_type_num[key] = r
+                    else:
+                        # Keep the one from spatial source or with larger surface
+                        existing = by_type_num[key]
+                        if r.source == "spatial" and existing.source != "spatial":
+                            by_type_num[key] = r
+                        elif r.source == existing.source and r.surface > existing.surface:
+                            by_type_num[key] = r
+                best = list(by_type_num.values())
+                
+                # Also deduplicate exterior rooms
+                ext_by_type = {}
+                for r in exterior:
+                    base = r.name_normalized.split("_")[0]
+                    if base not in ext_by_type or r.surface > ext_by_type[base].surface:
+                        ext_by_type[base] = r
+                exterior = list(ext_by_type.values())
+                
+                result = best + exterior
                 logger.info(
                     f"  ✅ Filtré: {len(rooms)} → {len(result)} pièces"
                 )
@@ -567,6 +656,8 @@ class SuperExtractor:
         """
         Trouve le sous-ensemble cohérent dont la somme ≈ target.
         Priorise la cohérence (pas de doublons de type) avant la somme.
+        
+        IMPORTANT: Only keep one room per type+number combination.
         """
         from itertools import combinations
 

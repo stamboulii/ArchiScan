@@ -10,8 +10,10 @@ logger = logging.getLogger(__name__)
 
 class PlanValidator:
 
-    SUM_TOLERANCE_ERROR = 1.0
-    SUM_TOLERANCE_WARNING = 0.1
+    # Tolérance basée sur un pourcentage (6%) au lieu d'une valeur absolue
+    # Pour les plans architecturaux, une tolérance de 6% est plus réaliste
+    SUM_TOLERANCE_ERROR = 0.06  # 6% de la surface déclarée
+    SUM_TOLERANCE_WARNING = 0.03  # 3% de la surface déclarée
 
     def validate(self, result) -> None:
         """Valide un ExtractionResult en place"""
@@ -27,15 +29,19 @@ class PlanValidator:
             return
         calc = result.interior_surface_calc
         diff = abs(calc - result.living_space)
-        if diff > self.SUM_TOLERANCE_ERROR:
-            result.validation_errors.append(
-                f"Surface mismatch: calc={calc:.2f}m², "
-                f"declared={result.living_space:.2f}m², diff={diff:.2f}m²"
-            )
-        elif diff > self.SUM_TOLERANCE_WARNING:
-            result.validation_warnings.append(
-                f"Surface gap: {diff:.2f}m²"
-            )
+        # Utiliser un pourcentage de la surface déclarée comme tolérance
+        # 5% d'erreur = erreur, 2% = avertissement
+        if result.living_space > 0:
+            diff_pct = diff / result.living_space
+            if diff_pct > self.SUM_TOLERANCE_ERROR:
+                result.validation_errors.append(
+                    f"Surface mismatch: calc={calc:.2f}m², "
+                    f"declared={result.living_space:.2f}m², diff={diff:.2f}m² ({diff_pct*100:.1f}%)"
+                )
+            elif diff_pct > self.SUM_TOLERANCE_WARNING:
+                result.validation_warnings.append(
+                    f"Surface gap: {diff:.2f}m² ({diff_pct*100:.1f}%)"
+                )
 
     def _validate_composites(self, result):
         for parent_name, child_names in result.composites.items():

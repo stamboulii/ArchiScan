@@ -1,285 +1,3 @@
-# """
-# Spatial Extractor - Extraction par position spatiale du tableau récapitulatif
-# Méthode la plus fiable: analyse les blocs PyMuPDF par coordonnées
-# """
-
-# import re
-# import logging
-# from typing import List, Dict, Tuple
-
-# logger = logging.getLogger(__name__)
-
-
-# class SpatialExtractor:
-
-#     TOTAL_KEYWORDS = [
-#         "TOTAL SURFACE HABITABLE", "SURFACE HABITABLE", "TOTAL SH",
-#     ]
-#     ANNEX_KEYWORDS = [
-#         "TOTAL SURFACE ANNEXE", "SURFACE ANNEXE", "TOTAL ANNEXE",
-#         "TOTAL EXTERIEURS", "TOTAL EXT",
-#     ]
-#     SKIP_KEYWORDS = [
-#         "BATIMENT", "APPARTEMENT", "NIVEAU", "TYPE", "LEGENDE",
-#         "DATE", "IND", "PLAN", "ECHELLE", "SCCV", "VENTE", "TOTAL",
-#     ]
-
-#     def extract_from_pages(self, pages_data: List[Dict]) -> Dict:
-#         """
-#         Analyse les pages pour trouver le tableau récapitulatif.
-#         Returns dict: table_rows, living_space, annex_space, metadata_lines, source
-#         """
-#         result = {
-#             "table_rows": [],
-#             "living_space": None,
-#             "annex_space": None,
-#             "metadata_lines": [],
-#             "source": "spatial",
-#         }
-#         if not pages_data:
-#             return result
-
-#         for page_data in pages_data:
-#             page_result = self._analyze_page(page_data)
-#             if len(page_result["table_rows"]) > len(result["table_rows"]):
-#                 result = page_result
-#         return result
-
-#     def _analyze_page(self, page_data: Dict) -> Dict:
-#         width = page_data.get("width", 1000)
-#         height = page_data.get("height", 1000)
-#         blocks = page_data.get("blocks", [])
-
-#         result = {
-#             "table_rows": [],
-#             "living_space": None,
-#             "annex_space": None,
-#             "metadata_lines": [],
-#             "source": "spatial",
-#         }
-
-#         text_lines = self._extract_text_lines(blocks)
-#         if not text_lines:
-#             logger.info("  ⚠️ Aucune ligne de texte extraite")
-#             return result
-
-#         # DEBUG: Toutes les lignes avant filtrage (limité aux 30 premières)
-#         logger.info(f"  📄 TOUTES LIGNES ({len(text_lines)} total):")
-#         for l in text_lines[:30]:
-#             logger.info(f"    x0={l['x0']:.0f} y0={l['y0']:.0f} | '{l['text']}'")
-
-#         # Stratégie 1: zone droite (>50% largeur)
-#         right_lines = [l for l in text_lines if l["x0"] > width * 0.50]
-#         logger.info(f"  ➡️ Zone droite x>{width*0.50:.0f}: {len(right_lines)} lignes")
-        
-#         # Stratégie 2: fallback zone basse
-#         if len(right_lines) < 3:
-#             right_lines = [l for l in text_lines if l["y0"] > height * 0.50]
-#             logger.info(f"  ⬇️ Fallback zone basse y>{height*0.50:.0f}: {len(right_lines)} lignes")
-
-#         right_lines.sort(key=lambda l: l["y0"])
-
-#         # DEBUG TEMPORAIRE
-#         logger.info(f"  🔎 RIGHT LINES AVANT FUSION ({len(right_lines)} lignes):")
-#         for l in right_lines:
-#             logger.info(f"    x0={l['x0']:.0f} y0={l['y0']:.0f} | '{l['text']}'")
-
-#         # NOUVEAU: Fusionner les lignes proches verticalement (même ligne logique)
-#         merged_lines = self._merge_close_lines(right_lines)
-#         logger.info(f"  🔗 MERGED LINES ({len(merged_lines)} lignes):")
-#         for l in merged_lines:
-#             logger.info(f"    '{l['text']}'")
-
-#         for line in merged_lines:
-#             text = line["text"].strip()
-#             text_upper = text.upper()
-
-#             # Détecter totaux
-#             for kw in self.TOTAL_KEYWORDS:
-#                 if kw in text_upper:
-#                     m = re.search(r"(\d+[\.,]\d+)", text)
-#                     if m:
-#                         result["living_space"] = float(m.group(1).replace(",", "."))
-#                         logger.info(f"    🏠 TOTAL SH trouvé: {result['living_space']}")
-
-#             for kw in self.ANNEX_KEYWORDS:
-#                 if kw in text_upper:
-#                     m = re.search(r"(\d+[\.,]\d+)", text)
-#                     if m:
-#                         result["annex_space"] = float(m.group(1).replace(",", "."))
-#                         logger.info(f"    📦 TOTAL ANNEXE trouvé: {result['annex_space']}")
-
-#             # Skip métadonnées
-#             if any(kw in text_upper for kw in self.SKIP_KEYWORDS):
-#                 result["metadata_lines"].append(text)
-#                 logger.info(f"    ⏭️ SKIP (métadonnée): '{text}'")
-#                 continue
-
-#             # Pattern 1: Format standard "Nom pièce    XX.XX m²" 
-#             # Gère: "CHAMBRE 2 12.74 m ²" (espace avant ²)
-#             match = re.match(
-#                 r"^([A-Za-z\u00C0-\u017F][A-Za-z\u00C0-\u017F\s\-'/\.\d]*\S)"
-#                 r"\s+(\d+[\.,]\d+)\s*m\s*[²2]?\s*$",
-#                 text
-#             )
-            
-#             # Pattern 2: Format collé "ENTREE/DGT 9,85m²" 
-#             if not match:
-#                 match = re.match(
-#                     r"^([A-Za-z\u00C0-\u017F/][A-Za-z\u00C0-\u017F\s\-'/\d]*?)"
-#                     r"\s*(\d+[\.,]\d+)\s*m\s*[²2]?\s*$",
-#                     text
-#                 )
-            
-#             # Pattern 3: Format ultra-collé sans espace "CELLIER1,78m²"
-#             if not match:
-#                 match = re.match(
-#                     r"^([A-Za-z\u00C0-\u017F][A-Za-z\u00C0-\u017F\s\-'/\d]*?)"
-#                     r"(\d+[\.,]\d+)\s*m\s*[²2]?\s*$",
-#                     text
-#                 )
-                
-#             if match:
-#                 name = match.group(1).strip()
-#                 surface_str = match.group(2).replace(",", ".")
-#                 # Filtrer noms numériques
-#                 if not re.match(r"^\d+$", name):
-#                     result["table_rows"].append((name, surface_str))
-#                     logger.info(f"    ✅ MATCH: '{name}' = {surface_str}m²")
-#                 else:
-#                     logger.info(f"    ❌ Rejeté (nom numérique): '{name}'")
-#                 continue
-            
-#             # Log si aucun pattern ne matche mais contient un nombre
-#             if re.search(r"\d+[\.,]\d+", text):
-#                 logger.info(f"    ❌ NON MATCH (a nombre): '{text}'")
-
-#         logger.info(f"  📊 RESULT FINAL: {len(result['table_rows'])} lignes, SH={result['living_space']}, Annex={result['annex_space']}")
-#         for name, surf in result["table_rows"]:
-#             logger.info(f"      - {name}: {surf}m²")
-            
-#         return result
-
-#     def _merge_close_lines(self, lines: List[Dict], y_tol: float = 8.0, x_tol: float = 150.0) -> List[Dict]:
-#         """
-#         Fusionne les lignes qui sont proches verticalement (même ligne logique dans le PDF)
-#         Ex: 'CHAMBRE 2' (y=460) et '12.74 m ²' (y=462) -> 'CHAMBRE 2 12.74 m ²'
-#         """
-#         if not lines:
-#             return []
-        
-#         merged = []
-#         current_group = [lines[0]]
-        
-#         for i in range(1, len(lines)):
-#             prev = current_group[-1]
-#             curr = lines[i]
-            
-#             # Si proche en Y et pas trop éloigné en X
-#             y_diff = abs(curr["y0"] - prev["y0"])
-#             x_diff = abs(curr["x0"] - prev["x0"])
-            
-#             if y_diff <= y_tol and x_diff <= x_tol:
-#                 current_group.append(curr)
-#             else:
-#                 # Fusionner le groupe courant
-#                 merged.append(self._combine_line_group(current_group))
-#                 current_group = [curr]
-        
-#         # Ne pas oublier le dernier groupe
-#         if current_group:
-#             merged.append(self._combine_line_group(current_group))
-        
-#         return merged
-
-#     def _combine_line_group(self, group: List[Dict]) -> Dict:
-#         """Combine un groupe de lignes en une seule ligne"""
-#         if len(group) == 1:
-#             return group[0]
-        
-#         # Trier par X pour avoir l'ordre gauche-droite
-#         group.sort(key=lambda l: l["x0"])
-        
-#         # Combiner les textes avec espace
-#         combined_text = " ".join(l["text"] for l in group)
-        
-#         # Bounding box englobante
-#         min_x0 = min(l["x0"] for l in group)
-#         min_y0 = min(l["y0"] for l in group)
-#         max_x1 = max(l["x1"] for l in group)
-#         max_y1 = max(l["y1"] for l in group)
-        
-#         return {
-#             "text": combined_text,
-#             "x0": min_x0, "y0": min_y0,
-#             "x1": max_x1, "y1": max_y1,
-#         }
-
-#     def _extract_text_lines(self, blocks: List[Dict]) -> List[Dict]:
-#         """Extrait lignes de texte avec coordonnées depuis blocks PyMuPDF"""
-#         lines = []
-#         for block in blocks:
-#             if block.get("type") != 0:  # Type 0 = texte
-#                 continue
-#             for line in block.get("lines", []):
-#                 spans = line.get("spans", [])
-#                 if not spans:
-#                     continue
-#                 text = " ".join(s.get("text", "") for s in spans).strip()
-#                 if not text:
-#                     continue
-#                 bbox = line.get("bbox", [0, 0, 0, 0])
-#                 lines.append({
-#                     "text": text,
-#                     "x0": bbox[0], "y0": bbox[1],
-#                     "x1": bbox[2], "y1": bbox[3],
-#                 })
-#         return lines
-
-#     def _find_aligned_pairs(self, lines: List[Dict], y_tol: float = 8.0) -> List[Tuple]:
-#         """Fallback conservé pour compatibilité"""
-#         pairs = []
-#         used = set()
-#         for i, line in enumerate(lines):
-#             if i in used:
-#                 continue
-#             if re.search(r"\d+[\.,]\d+\s*m\s*[²2]?", line["text"]):
-#                 continue
-#             for j, other in enumerate(lines):
-#                 if j in used or i == j:
-#                     continue
-#                 if abs(line["y0"] - other["y0"]) > y_tol:
-#                     continue
-#                 m = re.search(r"(\d+[\.,]\d+)\s*m\s*[²2]?", other["text"])
-#                 if m:
-#                     name = line["text"].strip()
-#                     if len(name) >= 2 and not any(k in name.upper() for k in self.SKIP_KEYWORDS):
-#                         pairs.append((name, m.group(1).replace(",", ".")))
-#                         used.update([i, j])
-#                         break
-#         return pairs
-
-#     def _find_consecutive_pairs(self, lines: List[Dict]) -> List[Tuple]:
-#         """Fallback conservé pour compatibilité"""
-#         pairs = []
-#         i = 0
-#         while i < len(lines) - 1:
-#             text = lines[i]["text"].strip()
-#             next_text = lines[i + 1]["text"].strip()
-
-#             has_number = re.search(r"\d+[\.,]\d+\s*m\s*[²2]?", text)
-#             next_match = re.match(r"^(\d+[\.,]\d+)\s*m\s*[²2]?\s*$", next_text)
-
-#             if not has_number and next_match and len(text) >= 2:
-#                 if not any(k in text.upper() for k in self.SKIP_KEYWORDS):
-#                     pairs.append((text, next_match.group(1).replace(",", ".")))
-#                     i += 2
-#                     continue
-#             i += 1
-#         return pairs
-
-
-
 """
 Spatial Extractor - Extraction par position spatiale du tableau récapitulatif
 Méthode la plus fiable: analyse les blocs PyMuPDF par coordonnées
@@ -306,6 +24,11 @@ class SpatialExtractor:
         "DATE", "IND", "PLAN", "ECHELLE", "SCCV", "VENTE", "TOTAL",
     ]
 
+    # Types de pièces uniques (on ne veut qu'une seule occurrence - la plus grande)
+    UNIQUE_ROOM_TYPES = ["SEJOUR", "CUISINE", "SEJOUR/CUISINE", "ENTREE", "RECEPTION", "JARDIN", "CELLIER"]
+    # Types qui peuvent avoir plusieurs occurrences numérotées
+    NUMBERED_ROOM_TYPES = ["CHAMBRE", "SDB", "SDE", "WC", "BALCON"]
+
     def extract_from_pages(self, pages_data: List[Dict], reference_hint: Optional[str] = None) -> Dict:
         """
         Analyse les pages pour trouver le tableau récapitulatif.
@@ -325,7 +48,91 @@ class SpatialExtractor:
             page_result = self._analyze_page(page_data, reference_hint)
             if len(page_result["table_rows"]) > len(result["table_rows"]):
                 result = page_result
+        
+        # Post-traitement: dédoublonnage intelligent
+        result["table_rows"] = self._deduplicate_rows(result["table_rows"])
+        
         return result
+
+    def _deduplicate_rows(self, rows: List[Tuple[str, str]]) -> List[Tuple[str, str]]:
+        """
+        Dédoublonne les lignes du tableau.
+        Stratégie:
+        - Pour les pièces uniques (SEJOUR, ENTREE, JARDIN, CELLIER...): garde la plus grande surface
+        - Pour les pièces numérotées (CHAMBRE 1, 2...): garde toutes si numéros différents
+        - Pour les doublons exacts (même nom, même surface): supprime
+        """
+        if not rows:
+            return rows
+        
+        # Grouper par nom normalisé
+        by_name: Dict[str, List[Tuple[str, float]]] = {}
+        
+        for name, surface_str in rows:
+            try:
+                surface = float(surface_str)
+            except ValueError:
+                continue
+            
+            # Normaliser le nom pour le regroupement
+            norm_name = self._normalize_room_name(name)
+            
+            if norm_name not in by_name:
+                by_name[norm_name] = []
+            by_name[norm_name].append((name, surface))
+        
+        # Sélectionner les meilleures entrées
+        deduplicated = []
+        seen_surfaces = set()  # Pour éviter les doublons exacts
+        
+        for norm_name, entries in by_name.items():
+            # Supprimer les doublons exacts (même surface)
+            unique_entries = []
+            for name, surface in entries:
+                key = (norm_name, round(surface, 2))
+                if key not in seen_surfaces:
+                    seen_surfaces.add(key)
+                    unique_entries.append((name, surface))
+            
+            if not unique_entries:
+                continue
+            
+            # Si c'est une pièce unique (pas numérotée), prendre la plus grande
+            if self._is_unique_room(norm_name):
+                best = max(unique_entries, key=lambda x: x[1])
+                deduplicated.append((best[0], str(best[1])))
+                if len(unique_entries) > 1:
+                    logger.info(f"    🔄 Dédoublonnage '{norm_name}': {len(unique_entries)} entrées → garde {best[1]}m²")
+            else:
+                # Pour les pièces numérotées, garder toutes les surfaces différentes
+                for name, surface in unique_entries:
+                    deduplicated.append((name, str(surface)))
+        
+        return deduplicated
+
+    def _normalize_room_name(self, name: str) -> str:
+        """Normalise un nom de pièce pour le regroupement"""
+        name_upper = name.upper().strip()
+        
+        # Types uniques spéciaux (regroupent tous les suffixes)
+        for unique in self.UNIQUE_ROOM_TYPES:
+            if unique in name_upper:
+                return unique
+        
+        # Pour les types numérotés (CHAMBRE, SDB, etc.)
+        for room_type in self.NUMBERED_ROOM_TYPES:
+            if room_type in name_upper:
+                # Extraire le numéro si présent
+                match = re.search(rf"{room_type}\s*(\d+)", name_upper)
+                if match:
+                    return f"{room_type}_{match.group(1)}"
+                return room_type
+        
+        return name_upper
+
+    def _is_unique_room(self, norm_name: str) -> bool:
+        """Détermine si une pièce doit être unique (pas de multiples)"""
+        return norm_name in self.UNIQUE_ROOM_TYPES
 
     def _analyze_page(self, page_data: Dict, reference_hint: Optional[str] = None) -> Dict:
         width = page_data.get("width", 1000)
@@ -350,7 +157,7 @@ class SpatialExtractor:
         for l in text_lines[:30]:
             logger.info(f"    x0={l['x0']:.0f} y0={l['y0']:.0f} | '{l['text']}'")
 
-        # NOUVEAU: Stratégie de filtrage par référence si fournie
+        # Stratégie de filtrage par référence si fournie
         target_lines = text_lines
         ref_y = None
         
@@ -359,25 +166,21 @@ class SpatialExtractor:
             if ref_y:
                 logger.info(f"  📍 Référence '{reference_hint}' trouvée à y={ref_y:.0f}")
                 # Prendre les lignes au-dessus de la référence (même tableau)
-                # et ignorer ce qui est trop en bas (autres appartements)
                 target_lines = [l for l in text_lines if l["y0"] < ref_y + 100]
                 logger.info(f"  🎯 Lignes au-dessus de référence: {len(target_lines)}")
         
-        # Si pas de référence ou non trouvée, utiliser la zone haute (pas droite)
+        # Si pas de référence ou non trouvée, utiliser la zone haute
         if not ref_y:
-            # Stratégie: moitié supérieure de la page (évite les autres appartements en bas)
-            target_lines = [l for l in text_lines if l["y0"] < height * 0.65]
-            logger.info(f"  ⬆️ Zone haute y<{height*0.65:.0f}: {len(target_lines)} lignes")
+            target_lines = [l for l in text_lines if l["y0"] < height * 0.90]
+            logger.info(f"  ⬆️ Zone haute y<{height*0.90:.0f}: {len(target_lines)} lignes")
 
-        # Filtrer les lignes avec des surfaces (contiennent "m²" ou "m ²" ou un nombre + m)
+        # Filtrer les lignes avec des surfaces
         surface_lines = []
         for line in target_lines:
             text = line["text"]
-            # Détecter si c'est une ligne de surface (contient nombre + m)
-            if re.search(r"\d+[\.,]\d+\s*m", text, re.IGNORECASE):
+            if re.search(r"\d+[\.,]\d+\s*m\s*[²2\xa0]?\s*$", text, re.IGNORECASE):
                 surface_lines.append(line)
-            # Ou si c'est un nom de pièce potentiel
-            elif any(kw in text.upper() for kw in ["CHAMBRE", "SEJOUR", "CUISINE", "SDB", "SDE", "WC", "ENTREE", "BALCON"]):
+            elif any(kw in text.upper() for kw in ["CHAMBRE", "SEJOUR", "CUISINE", "SDB", "SDE", "WC", "ENTREE", "BALCON", "CELLIER", "SALLE", "JARDIN", "CIRCULATION", "DGT", "DÉGAGEMENT", "COULOIR", "PALIER"]):
                 surface_lines.append(line)
 
         surface_lines.sort(key=lambda l: l["y0"])
@@ -392,6 +195,28 @@ class SpatialExtractor:
         logger.info(f"  🔗 MERGED LINES ({len(merged_lines)} lignes):")
         for l in merged_lines:
             logger.info(f"    '{l['text']}'")
+
+        # Phase 2: Pair surfaces without room names with WC rooms nearby
+        # Only pair WC specifically - don't do aggressive "any" pairing
+        extra_rooms = []
+        lines_by_y = {}
+        for line in merged_lines:
+            text = line["text"].strip()
+            if re.search(r"\d+[\.,]\d+\s*m", text, re.IGNORECASE):
+                has_room = any(kw in text.upper() for kw in ["CHAMBRE", "SEJOUR", "CUISINE", "SDB", "SDE", "WC", "ENTREE", "BALCON", "CELLIER", "SALLE", "JARDIN", "CIRCULATION", "DGT"])
+                if not has_room:
+                    y_pos = line["y0"]
+                    # Only pair with WC specifically
+                    nearby_room = self._find_nearby_room(target_lines, y_pos, 30, only_wc=True)
+                    if nearby_room:
+                        combined_text = f"{nearby_room['text']} {text}"
+                        extra_rooms.append({"text": combined_text, "y0": min(y_pos, nearby_room["y0"]), "source": "paired"})
+                        logger.info(f"    🔗 PAIRED (WC): '{nearby_room['text']}' + '{text}'")
+
+        # Ajouter les rooms appariées aux merged_lines
+        if extra_rooms:
+            merged_lines.extend(extra_rooms)
+            logger.info(f"  ➕ Après appariement: {len(merged_lines)} lignes")
 
         for line in merged_lines:
             text = line["text"].strip()
@@ -421,42 +246,60 @@ class SpatialExtractor:
             # Pattern 1: Format standard "Nom pièce    XX.XX m²" 
             match = re.match(
                 r"^([A-Za-z\u00C0-\u017F][A-Za-z\u00C0-\u017F\s\-'/\.\d]*\S)"
-                r"\s+(\d+[\.,]\d+)\s*m\s*[²2]?\s*$",
-                text
+                r"\s+(\d+[\.,]\d+)\s*m\s*[²2\xa0]?\s*$",
+                text, re.IGNORECASE
             )
             
             # Pattern 2: Format collé "ENTREE/DGT 9,85m²" 
             if not match:
                 match = re.match(
                     r"^([A-Za-z\u00C0-\u017F/][A-Za-z\u00C0-\u017F\s\-'/\d]*?)"
-                    r"\s*(\d+[\.,]\d+)\s*m\s*[²2]?\s*$",
-                    text
+                    r"\s*(\d+[\.,]\d+)\s*m\s*[²2\xa0]?\s*$",
+                    text, re.IGNORECASE
                 )
             
             # Pattern 3: Format ultra-collé sans espace "CELLIER1,78m²"
             if not match:
                 match = re.match(
                     r"^([A-Za-z\u00C0-\u017F][A-Za-z\u00C0-\u017F\s\-'/\d]*?)"
-                    r"(\d+[\.,]\d+)\s*m\s*[²2]?\s*$",
-                    text
+                    r"(\d+[\.,]\d+)\s*m\s*[²2\xa0]?\s*$",
+                    text, re.IGNORECASE
+                )
+            
+            # Pattern 4: Format inversé "XX.XX m² NOM"
+            if not match:
+                match = re.match(
+                    r"^(\d+[\.,]\d+)\s*m\s*[²2\xa0]?\s+([A-Za-z\u00C0-\u017F][A-Za-z\u00C0-\u017F\s\-'/0-9]+)",
+                    text, re.IGNORECASE
                 )
                 
             if match:
-                name = match.group(1).strip()
-                surface_str = match.group(2).replace(",", ".")
-                # Filtrer noms numériques
-                if not re.match(r"^\d+$", name):
+                # Déterminer quel groupe est le nom et lequel est la surface
+                if len(match.groups()) >= 2:
+                    g1, g2 = match.group(1), match.group(2)
+                    # Si g1 est un nombre → c'est la surface (pattern inversé)
+                    if re.match(r"^\d+[\.,]\d+$", g1.replace(",", ".")):
+                        surface_str = g1.replace(",", ".")
+                        name = g2.strip()
+                    else:
+                        name = g1.strip()
+                        surface_str = g2.replace(",", ".")
+                else:
+                    continue
+                
+                # Filtrer noms numériques et trop courts
+                if not re.match(r"^\d+$", name) and len(name) >= 2:
                     result["table_rows"].append((name, surface_str))
                     logger.info(f"    ✅ MATCH: '{name}' = {surface_str}m²")
                 else:
-                    logger.info(f"    ❌ Rejeté (nom numérique): '{name}'")
+                    logger.info(f"    ❌ Rejeté (nom numérique ou trop court): '{name}'")
                 continue
             
-            # Log si aucun pattern ne matche mais contient un nombre
+            # Log si aucun pattern ne matche
             if re.search(r"\d+[\.,]\d+", text):
                 logger.info(f"    ❌ NON MATCH (a nombre): '{text}'")
 
-        logger.info(f"  📊 RESULT FINAL: {len(result['table_rows'])} lignes, SH={result['living_space']}, Annex={result['annex_space']}")
+        logger.info(f"  📊 RESULT AVANT DÉDOUBLONNAGE: {len(result['table_rows'])} lignes")
         for name, surf in result["table_rows"]:
             logger.info(f"      - {name}: {surf}m²")
             
@@ -470,11 +313,8 @@ class SpatialExtractor:
                 return line["y0"]
         return None
 
-    def _merge_close_lines(self, lines: List[Dict], y_tol: float = 8.0, x_tol: float = 150.0) -> List[Dict]:
-        """
-        Fusionne les lignes qui sont proches verticalement (même ligne logique dans le PDF)
-        Ex: 'CHAMBRE 2' (y=460) et '12.74 m ²' (y=462) -> 'CHAMBRE 2 12.74 m ²'
-        """
+    def _merge_close_lines(self, lines: List[Dict], y_tol: float = 15.0, x_tol: float = 30.0) -> List[Dict]:
+        """Fusionne les lignes proches verticalement"""
         if not lines:
             return []
         
@@ -485,18 +325,15 @@ class SpatialExtractor:
             prev = current_group[-1]
             curr = lines[i]
             
-            # Si proche en Y et pas trop éloigné en X
             y_diff = abs(curr["y0"] - prev["y0"])
             x_diff = abs(curr["x0"] - prev["x0"])
             
             if y_diff <= y_tol and x_diff <= x_tol:
                 current_group.append(curr)
             else:
-                # Fusionner le groupe courant
                 merged.append(self._combine_line_group(current_group))
                 current_group = [curr]
         
-        # Ne pas oublier le dernier groupe
         if current_group:
             merged.append(self._combine_line_group(current_group))
         
@@ -507,29 +344,77 @@ class SpatialExtractor:
         if len(group) == 1:
             return group[0]
         
-        # Trier par X pour avoir l'ordre gauche-droite
         group.sort(key=lambda l: l["x0"])
-        
-        # Combiner les textes avec espace
         combined_text = " ".join(l["text"] for l in group)
-        
-        # Bounding box englobante
-        min_x0 = min(l["x0"] for l in group)
-        min_y0 = min(l["y0"] for l in group)
-        max_x1 = max(l["x1"] for l in group)
-        max_y1 = max(l["y1"] for l in group)
         
         return {
             "text": combined_text,
-            "x0": min_x0, "y0": min_y0,
-            "x1": max_x1, "y1": max_y1,
+            "x0": min(l["x0"] for l in group),
+            "y0": min(l["y0"] for l in group),
+            "x1": max(l["x1"] for l in group),
+            "y1": max(l["y1"] for l in group),
         }
+
+    def _find_nearby_room(self, lines: List[Dict], y_pos: float, y_tolerance: float = 50.0, only_wc: bool = False) -> Optional[Dict]:
+        """Trouve un nom de pièce à proximité (en Y) d'une position donnée
+        
+        Args:
+            lines: Liste des lignes à rechercher
+            y_pos: Position Y de référence
+            y_tolerance: Tolérance verticale en pixels
+            only_wc: Si True, cherche seulement WC (pas SDB/WC)
+        """
+        if only_wc:
+            # Only look for WC specifically
+            for line in lines:
+                if abs(line["y0"] - y_pos) <= y_tolerance:
+                    text = line["text"].upper()
+                    # Only match standalone WC, not SDB/WC
+                    if re.search(r"\bWC\b", text) or re.search(r"\bW\.\s*C\.\b", text):
+                        return line
+            return None
+        
+        ROOM_KEYWORDS = ["CHAMBRE", "SEJOUR", "CUISINE", "SDB", "SDE", "WC", "ENTREE", "BALCON", "CELLIER", "SALLE", "JARDIN", "CIRCULATION", "DGT", "DÉGAGEMENT", "COULOIR", "PALIER"]
+        
+        # Chercher dans les lignes à proximité
+        for line in lines:
+            if abs(line["y0"] - y_pos) <= y_tolerance:
+                text = line["text"].upper()
+                if any(kw in text for kw in ROOM_KEYWORDS):
+                    # Vérifier que ce n'est pas déjà une ligne avec surface
+                    if not re.search(r"\d+[\.,]\d+\s*m", line["text"], re.IGNORECASE):
+                        return line
+        return None
+
+    def _find_nearby_room_any(self, lines: List[Dict], y_pos: float, y_tolerance: float = 40.0) -> Optional[Dict]:
+        """Trouve n'importe quel nom de pièce à proximité (en Y) - moins strict
+        
+        Cette méthode est utilisée pour trouver des pièces qui pourraient être
+        manquantes mais dont la surface apparaît séparément dans le PDF.
+        """
+        ROOM_KEYWORDS = ["CHAMBRE", "SEJOUR", "CUISINE", "SDB", "SDE", "WC", "ENTREE", "BALCON", "CELLIER", "SALLE", "JARDIN", "CIRCULATION", "DGT", "DÉGAGEMENT", "COULOIR", "PALIER", "RGT", "LOCAL"]
+        
+        best_match = None
+        best_dist = float('inf')
+        
+        for line in lines:
+            dist = abs(line["y0"] - y_pos)
+            if dist <= y_tolerance:
+                text = line["text"].upper()
+                if any(kw in text for kw in ROOM_KEYWORDS):
+                    # Vérifier que ce n'est pas déjà une ligne avec surface
+                    if not re.search(r"\d+[\.,]\d+\s*m", line["text"], re.IGNORECASE):
+                        # Prendre le plus proche
+                        if dist < best_dist:
+                            best_dist = dist
+                            best_match = line
+        return best_match
 
     def _extract_text_lines(self, blocks: List[Dict]) -> List[Dict]:
         """Extrait lignes de texte avec coordonnées depuis blocks PyMuPDF"""
         lines = []
         for block in blocks:
-            if block.get("type") != 0:  # Type 0 = texte
+            if block.get("type") != 0:
                 continue
             for line in block.get("lines", []):
                 spans = line.get("spans", [])
