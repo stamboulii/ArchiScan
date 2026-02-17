@@ -17,66 +17,161 @@ class RoomNormalizer:
     # (pattern, name_template, RoomType, is_exterior)
     # Ordre: composites et spécifiques EN PREMIER
     ROOM_ALIASES = [
-        # === Composites ===
-        (r"^(SEJOUR|S[ÉE]JOUR|SALON|RECEPTION|R[ÉE]CEPTION)\s*/?\s*CUISINE",
-         "sejour_cuisine", RoomType.LIVING_KITCHEN, False),
-        (r"^CUISINE\s*/?\s*(SEJOUR|S[ÉE]JOUR|SALON)",
-         "sejour_cuisine", RoomType.LIVING_KITCHEN, False),
-        (r"^PI[ÈE]CE\s*(DE\s*VIE|PRINCIPALE)",
-         "sejour_cuisine", RoomType.LIVING_KITCHEN, False),
+            # ══════════════════════════════════════════
+            # COMPOSITES (toujours EN PREMIER)
+            # ══════════════════════════════════════════
+            (r"^(SEJOUR|S[ÉE]JOUR|SALON|RECEPTION|R[ÉE]CEPTION)\s*/?\s*CUISINE",
+            "sejour_cuisine", RoomType.LIVING_KITCHEN, False),
+            (r"^CUISINE\s*/?\s*(SEJOUR|S[ÉE]JOUR|SALON)",
+            "sejour_cuisine", RoomType.LIVING_KITCHEN, False),
+            (r"^PI[ÈE]CE\s*(DE\s*VIE|PRINCIPALE|A\s*VIVRE)",
+            "sejour_cuisine", RoomType.LIVING_KITCHEN, False),
+            (r"^(LIVING|ESPACE)\s*/?\s*(CUISINE|KITCHEN)",
+            "sejour_cuisine", RoomType.LIVING_KITCHEN, False),
 
-        # === Réception (DISTINCT de séjour) ===
-        (r"^(RECEPTION|R[ÉE]CEPTION)$",
-         "reception", RoomType.RECEPTION, False),
+            # SDB/WC combiné (AVANT les patterns séparés)
+            (r"^(SDB|SALLE\s*DE\s*BAINS?)\s*/\s*(WC|W\.?C\.?|TOILETT?ES?)$",
+            "salle_de_bain", RoomType.BATHROOM, False),
+            (r"^(WC|W\.?C\.?)\s*/\s*(SDB|SALLE\s*DE\s*BAINS?)$",
+            "salle_de_bain", RoomType.BATHROOM, False),
 
-        # === Séjour / Salon ===
-        (r"^(SEJOUR|S[ÉE]JOUR|SALON|LIVING|DOUBLE\s*SEJOUR)$",
-         "sejour", RoomType.LIVING_ROOM, False),
+            # ══════════════════════════════════════════
+            # RÉCEPTION (distinct de séjour)
+            # ══════════════════════════════════════════
+            (r"^(RECEPTION|R[ÉE]CEPTION|PIECE\s*DE\s*RECEPTION)$",
+            "reception", RoomType.RECEPTION, False),
 
-        # === Cuisine ===
-        (r"^(CUISINE|KITCHENETTE|COIN\s*CUISINE)$",
-         "cuisine", RoomType.KITCHEN, False),
+            # ══════════════════════════════════════════
+            # SÉJOUR / SALON
+            # ══════════════════════════════════════════
+            (r"^(SEJOUR|S[ÉE]JOUR|SALON|LIVING|DOUBLE\s*S[ÉE]JOUR|"
+            r"SALLE\s*[AÀ]\s*MANGER|SAM|PIECE\s*PRINCIPALE)$",
+            "sejour", RoomType.LIVING_ROOM, False),
 
-        # === Entrée ===
-        (r"^(ENTREE|ENTR[ÉE]E|HALL\s*D['\u2019]?ENTREE|HALL|VESTIBULE)$",
-         "entree", RoomType.ENTRY, False),
-        (r"^(DGT|D\.G\.T\.?|D[ÉE]GAGEMENT|COULOIR|PALIER|CIRCULATION)$",
-         "circulation", RoomType.CIRCULATION, False),
+            # ══════════════════════════════════════════
+            # CUISINE
+            # ══════════════════════════════════════════
+            (r"^(CUISINE|KITCHENETTE|COIN\s*CUISINE|CUISINE\s*[ÉE]QUIP[ÉE]E|"
+            r"ESPACE\s*CUISINE|CUISINE\s*AM[ÉE]RICAINE|OFFICE)$",
+            "cuisine", RoomType.KITCHEN, False),
 
-        # === Chambres ===
-        (r"^CHAMBRE\s*(\d+)$", "chambre_{n}", RoomType.BEDROOM, False),
-        (r"^CHAMBRE$", "chambre", RoomType.BEDROOM, False),
-        (r"^CH\.?\s*(\d+)$", "chambre_{n}", RoomType.BEDROOM, False),
-        (r"^SUITE\s*PARENTALE\s*(\d*)$", "chambre_{n}", RoomType.BEDROOM, False),
+            # === Entrée/DGT combiné (AVANT le pattern entrée simple) ===
+            (r"^(ENTREE\s*/\s*DGT|ENTR[ÉEée]E\s*/\s*D[ÉE]GAGEMENT|"
+            r"HALL\s*/\s*DGT|ENTR[ÉEée]E\s*/\s*CIRCULATION)$",
+            "entree", RoomType.ENTRY, False),
 
-        # === Salle de bain ===
-        (r"^(SALLE\s*DE\s*BAINS?|SDB|S\.?\s*D\.?\s*B\.?)$",
-         "salle_de_bain", RoomType.BATHROOM, False),
-        (r"^(SALLE\s*DE\s*BAINS?|SDB|S\.?\s*D\.?\s*B\.?)\s*(\d+)$",
-         "salle_de_bain_{n}", RoomType.BATHROOM, False),
+            # ══════════════════════════════════════════
+            # ENTRÉE / HALL
+            # ══════════════════════════════════════════
+            (r"^(ENTR[ÉEée]E|HALL\s*D['\u2019]?ENTR[ÉEée]E|HALL|VESTIBULE|"
+            r"SAS\s*D['\u2019]?ENTR[ÉEée]E|SAS|ACCUEIL)$",
+            "entree", RoomType.ENTRY, False),
 
-        # === Salle d'eau ===
-        (r"^(SALLE\s*D['\u2019]?\s*EAU|SDE|S\.?\s*D\.?\s*E\.?)$",
-         "salle_d_eau", RoomType.SHOWER_ROOM, False),
+            # ══════════════════════════════════════════
+            # CIRCULATION / DÉGAGEMENT
+            # ══════════════════════════════════════════
+            (r"^(DGT|D\.G\.T\.?|D[ÉE]GAGEMENT|COULOIR|PALIER|CIRCULATION|"
+            r"DIST\.?|DISTRIBUTION|PASSAGE|COURSIVE)$",
+            "circulation", RoomType.CIRCULATION, False),
 
-        # === WC ===
-        (r"^(WC|W\.?\s*C\.?|TOILETT?E?S?)$", "wc", RoomType.WC, False),
-        (r"^(RGT\s*WC|RGT\s*W\.?\s*C\.?)$", "wc", RoomType.WC, False),
+            # ══════════════════════════════════════════
+            # CHAMBRES
+            # ══════════════════════════════════════════
+            (r"^CHAMBRE\s*(\d+)$", "chambre_{n}", RoomType.BEDROOM, False),
+            (r"^CHAMBRE$", "chambre", RoomType.BEDROOM, False),
+            (r"^CH\.?\s*(\d+)$", "chambre_{n}", RoomType.BEDROOM, False),
+            (r"^SUITE\s*PARENTALE\s*(\d*)$", "chambre_{n}", RoomType.BEDROOM, False),
+            (r"^(BUREAU|OFFICE|CABINET)\s*(\d*)$", "chambre_{n}", RoomType.BEDROOM, False),
+            (r"^CHAMBRE\s*D['\u2019]?\s*(AMIS?|ENFANTS?)\s*(\d*)$",
+            "chambre_{n}", RoomType.BEDROOM, False),
+            (r"^CH\s*(\d+)$", "chambre_{n}", RoomType.BEDROOM, False),
+            (r"^CHAMBRE\s*PARENTALE$", "chambre_1", RoomType.BEDROOM, False),
+            (r"^CHAMBRE\s*/\s*BUREAU\s*(\d*)$", "chambre_{n}", RoomType.BEDROOM, False),
 
-        # === Rangements ===
-        (r"^(DRESSING\s*\d*)$", "dressing", RoomType.DRESSING, False),
-        (r"^(PLACARD|CELLIER|BUANDERIE|LINGERIE|RANGEMENT|RGT)$",
-         "storage", RoomType.STORAGE, False),
+            # ══════════════════════════════════════════
+            # SALLE DE BAIN
+            # ══════════════════════════════════════════
+            (r"^(SALLE\s*DE\s*BAINS?|SDB|S\.?\s*D\.?\s*B\.?|BAIN)\s*(\d+)$",
+            "salle_de_bain_{n}", RoomType.BATHROOM, False),
+            (r"^(SALLE\s*DE\s*BAINS?|SDB|S\.?\s*D\.?\s*B\.?|BAIN)$",
+            "salle_de_bain", RoomType.BATHROOM, False),
+            (r"^(SALLE\s*DE\s*BAINS?\s*PARENTALE)$",
+            "salle_de_bain_1", RoomType.BATHROOM, False),
 
-        # === Extérieur ===
-        (r"^BALCON\s*(\d*)$", "balcon", RoomType.BALCONY, True),
-        (r"^TERRASSE\s*(\d*)$", "terrasse", RoomType.TERRACE, True),
-        (r"^(JARDIN|JARDINET)\s*(\d*)$", "jardin", RoomType.GARDEN, True),
-        (r"^LOGGIA\s*(\d*)$", "loggia", RoomType.LOGGIA, True),
-        (r"^(PARKING|GARAGE|BOX|STATIONNEMENT)\s*(\d*)$",
-         "parking", RoomType.PARKING, True),
-        (r"^CAVE\s*(\d*)$", "cave", RoomType.CELLAR, True),
-    ]
+            # ══════════════════════════════════════════
+            # SALLE D'EAU
+            # ══════════════════════════════════════════
+            (r"^(SALLE\s*D['\u2019]?\s*EAU|SDE|S\.?\s*D\.?\s*E\.?|EAU)\s*(\d+)$",
+            "salle_d_eau_{n}", RoomType.SHOWER_ROOM, False),
+            (r"^(SALLE\s*D['\u2019]?\s*EAU|SDE|S\.?\s*D\.?\s*E\.?|EAU)$",
+            "salle_d_eau", RoomType.SHOWER_ROOM, False),
+
+            # ══════════════════════════════════════════
+            # WC / TOILETTES
+            # ══════════════════════════════════════════
+            (r"^(WC|W\.?\s*C\.?|TOILETT?E?S?)\s*(\d+)$",
+            "wc_{n}", RoomType.WC, False),
+            (r"^(WC|W\.?\s*C\.?|TOILETT?E?S?)$",
+            "wc", RoomType.WC, False),
+            (r"^(RGT\s*WC|RGT\s*W\.?\s*C\.?)$",
+            "wc", RoomType.WC, False),
+
+            # ══════════════════════════════════════════
+            # RANGEMENTS
+            # ══════════════════════════════════════════
+            (r"^(DRESSING)\s*(\d*)$", "dressing", RoomType.DRESSING, False),
+            (r"^(PLACARD|CELLIER|BUANDERIE|LINGERIE|RANGEMENT|RGT|"
+            r"LOCAL\s*TECHNIQUE|LOCAL\s*POUSSETTE|CELLIER\s*/\s*BUANDERIE|"
+            r"GRENIER|REMISE|D[ÉE]BARRAS|CAVE\s*INT[ÉE]RIEURE)$",
+            "storage", RoomType.STORAGE, False),
+
+            # ══════════════════════════════════════════
+            # EXTÉRIEUR - BALCON
+            # ══════════════════════════════════════════
+            (r"^BALCON\s*(\d*)$", "balcon", RoomType.BALCONY, True),
+
+            # ══════════════════════════════════════════
+            # EXTÉRIEUR - TERRASSE
+            # ══════════════════════════════════════════
+            (r"^TERRASSE\s*(\d*)$", "terrasse", RoomType.TERRACE, True),
+            (r"^(TERRASSE\s*COUVERTE)\s*(\d*)$", "terrasse", RoomType.TERRACE, True),
+            (r"^(ROOF\s*TOP|TOIT\s*TERRASSE)\s*(\d*)$", "terrasse", RoomType.TERRACE, True),
+            (r"^(SOLARIUM)\s*(\d*)$", "terrasse", RoomType.TERRACE, True),
+
+            # ══════════════════════════════════════════
+            # EXTÉRIEUR - JARDIN
+            # ══════════════════════════════════════════
+            (r"^(JARDIN|JARDINET|JARDIN\s*PRIVATIF)\s*(\d*)$",
+            "jardin", RoomType.GARDEN, True),
+
+            # ══════════════════════════════════════════
+            # EXTÉRIEUR - LOGGIA
+            # ══════════════════════════════════════════
+            (r"^(LOGGIA|LOGIA)\s*(\d*)$", "loggia", RoomType.LOGGIA, True),
+
+            # ══════════════════════════════════════════
+            # EXTÉRIEUR - PATIO / COUR
+            # ══════════════════════════════════════════
+            (r"^(PATIO|COUR|COURETTE|COUR\s*ANGLAISE)\s*(\d*)$",
+            "patio", RoomType.PATIO, True),
+
+            # ══════════════════════════════════════════
+            # PARKING / GARAGE
+            # ══════════════════════════════════════════
+            (r"^(PARKING|GARAGE|BOX|STATIONNEMENT|PLACE\s*DE\s*PARKING)\s*(\d*)$",
+            "parking", RoomType.PARKING, True),
+
+            # ══════════════════════════════════════════
+            # CAVE
+            # ══════════════════════════════════════════
+            (r"^(CAVE|SOUS[\s\-]?SOL)\s*(\d*)$", "cave", RoomType.CELLAR, True),
+
+            # ══════════════════════════════════════════
+            # EXTÉRIEUR - VÉRANDA (bonus)
+            # ══════════════════════════════════════════
+            (r"^(V[ÉE]RANDA|PERGOLA|AUVENT)\s*(\d*)$",
+            "terrasse", RoomType.TERRACE, True),
+        ]
 
     def __init__(self):
         self._seen_names = {}

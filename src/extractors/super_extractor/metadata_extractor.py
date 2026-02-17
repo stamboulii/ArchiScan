@@ -62,6 +62,7 @@ class MetadataExtractor:
     ANNEX_SPACE_PATTERNS = [
         r"TOTAL\s*SURFACE\s*ANNEXE\s*[:\s]*(\d+[\.,]\d+)",
         r"SURFACE\s*ANNEXE\s*[:\s]*(\d+[\.,]\d+)",
+        r"TOTAL\s*EXT[ÉE]RIEURS?\s*[:\s]*(\d+[\.,]\d+)",
     ]
  
 

@@ -108,5 +108,7 @@ class TextExtractor:
 
     def _clean_text(self, text: str) -> str:
         text = re.sub(r"\s+", " ", text)
+        # Convertir virgules françaises → points (avec ET sans espace avant m)
         text = re.sub(r"(\d),(\d{2})\s*m", r"\1.\2 m", text)
+        text = re.sub(r"(\d),(\d{2})m", r"\1.\2 m", text)
         return text.strip()

@@ -35,8 +35,14 @@ logger = logging.getLogger(__name__)
 class SuperExtractor:
 
     SURFACE_PATTERNS = [
+        # Format standard: NOM 00.00 m²
         r"([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ\s\-/\.\d]*?)\s+(\d+[\.,]\d+)\s*m[²2]",
+        # Format collé: NOM 00.00m²  (pas d'espace avant m²)
+        r"([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ\s\-/\.\d]*?)\s+(\d+[\.,]\d+)m[²2]",
+        # Format avec : NOM: 00.00 m²
         r"([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ\s\-/\.\d]*?)\s*:\s*(\d+[\.,]\d+)\s*m[²2]",
+        # Format tableau: NOM    00,00m²  (espaces multiples, virgule)
+        r"([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ\s\-/\.\d]*?)\s{2,}(\d+[\.,]\d+)\s*m[²2]?",
     ]
 
     SKIP_KEYWORDS = [
@@ -89,7 +95,8 @@ class SuperExtractor:
 
         # ── ÉTAPE 2: Extraction spatiale (tableau récap) ──────
         spatial_data = self.spatial_extractor.extract_from_pages(
-            text_data["pages_data"]
+            text_data["pages_data"], 
+            reference_hint=reference_hint
         )
         spatial_rows = spatial_data["table_rows"]
         logger.info(f"  📐 Spatial: {len(spatial_rows)} lignes de tableau")
@@ -124,13 +131,13 @@ class SuperExtractor:
 
         # Priorité 1: tableau spatial (le plus fiable)
         if spatial_rows:
-            self.normalizer.reset()  # Reset pour cette source
+            self.normalizer.reset()
             rooms = self._rooms_from_table(spatial_rows, "spatial")
             logger.info(f"  ✅ {len(rooms)} pièces depuis tableau spatial")
 
         # Priorité 2: regex sur texte PyMuPDF
         if len(rooms) < 3:
-            self.normalizer.reset()  # Reset pour cette source
+            self.normalizer.reset()
             rooms_regex = self._rooms_from_regex(
                 text_data["text_pymupdf"], "pymupdf"
             )
@@ -139,10 +146,13 @@ class SuperExtractor:
 
         # Priorité 3: regex sur texte OCR
         if len(rooms) < 3 and text_data["text_ocr"]:
-            self.normalizer.reset()  # Reset pour cette source
+            self.normalizer.reset()
             rooms_ocr = self._rooms_from_regex(text_data["text_ocr"], "ocr")
             rooms = self._merge_rooms(rooms, rooms_ocr)
-            logger.info(f"  🔍 +regex OCR → {len(rooms)} pièces")   
+            logger.info(f"  🔍 +regex OCR → {len(rooms)} pièces")
+
+        # Étape 3b: Dédoublonnage final
+        rooms = self._final_dedup(rooms)
 
         result.rooms = rooms
         result.sources = {r.name_normalized: r.source for r in rooms}
@@ -176,6 +186,13 @@ class SuperExtractor:
             spatial_data.get("annex_space")
             or meta.get("annex_space", 0.0)
         )
+        # ── ÉTAPE 5b: Filtrage multi-appartement ─────────────
+        if result.living_space > 0:
+            result.rooms = self._filter_by_reference(
+                result.rooms, result.reference, result.living_space
+            )
+            result.sources = {r.name_normalized: r.source for r in result.rooms}
+
 
         # ── ÉTAPE 6: Typology + property type ─────────────────
         result.typology = (
@@ -223,9 +240,92 @@ class SuperExtractor:
             ))
         return rooms
 
+    # def _rooms_from_regex(self, text, source):
+    #     """Extrait les pièces par regex depuis le texte brut (fallback)"""
+    #     rooms = []
+    #     for pattern in self.SURFACE_PATTERNS:
+    #         for match in re.finditer(pattern, text, re.IGNORECASE):
+    #             name_raw = match.group(1).strip()
+    #             surface_str = match.group(2)
+
+    #             if len(name_raw) < 2 or len(name_raw) > 50:
+    #                 continue
+    #             try:
+    #                 surface = float(surface_str.replace(",", "."))
+    #             except ValueError:
+    #                 continue
+    #             if surface < 0.5 or surface > 500:
+    #                 continue
+    #             if any(kw in name_raw.upper() for kw in self.SKIP_KEYWORDS):
+    #                 continue
+
+    #             norm, rtype, num, ext, conf = self.normalizer.normalize(name_raw)
+    #             if not rtype:
+    #                 continue
+
+    #             rooms.append(ExtractedRoom(
+    #                 name_raw=name_raw,
+    #                 name_normalized=norm,
+    #                 surface=surface,
+    #                 room_type=rtype,
+    #                 is_exterior=ext,
+    #                 room_number=num,
+    #                 source=source,
+    #                 confidence=conf * 0.85,  # Moins fiable que spatial
+    #             ))
+    #     return rooms
+
+    # def _rooms_from_regex(self, text, source):
+    #     rooms = []
+    #     seen_surfaces = {}  # (room_type, surface) → déjà vu
+        
+    #     for pattern in self.SURFACE_PATTERNS:
+    #         for match in re.finditer(pattern, text, re.IGNORECASE):
+    #             name_raw = match.group(1).strip()
+    #             surface_str = match.group(2)
+
+    #             if len(name_raw) < 2 or len(name_raw) > 50:
+    #                 continue
+    #             try:
+    #                 surface = float(surface_str.replace(",", "."))
+    #             except ValueError:
+    #                 continue
+    #             if surface < 0.5 or surface > 500:
+    #                 continue
+    #             if any(kw in name_raw.upper() for kw in self.SKIP_KEYWORDS):
+    #                 continue
+
+    #             norm, rtype, num, ext, conf = self.normalizer.normalize(name_raw)
+    #             if not rtype:
+    #                 continue
+
+    #             # ── Anti-doublon intra-source ──
+    #             # Même type + même surface = même pièce vue 2 fois
+    #             dedup_key = (rtype, round(surface, 2))
+    #             if dedup_key in seen_surfaces:
+    #                 logger.debug(
+    #                     f"  Doublon intra-source ignoré: '{name_raw}' "
+    #                     f"{surface}m² (déjà vu comme '{seen_surfaces[dedup_key]}')"
+    #                 )
+    #                 continue
+    #             seen_surfaces[dedup_key] = name_raw
+
+    #             rooms.append(ExtractedRoom(
+    #                 name_raw=name_raw,
+    #                 name_normalized=norm,
+    #                 surface=surface,
+    #                 room_type=rtype,
+    #                 is_exterior=ext,
+    #                 room_number=num,
+    #                 source=source,
+    #                 confidence=conf * 0.85,
+    #             ))
+    #     return rooms
+    
     def _rooms_from_regex(self, text, source):
-        """Extrait les pièces par regex depuis le texte brut (fallback)"""
         rooms = []
+        seen_surfaces = {}
+
         for pattern in self.SURFACE_PATTERNS:
             for match in re.finditer(pattern, text, re.IGNORECASE):
                 name_raw = match.group(1).strip()
@@ -242,9 +342,19 @@ class SuperExtractor:
                 if any(kw in name_raw.upper() for kw in self.SKIP_KEYWORDS):
                     continue
 
+                # ── Nettoyage du nom brut ──
+                name_raw = self._clean_room_name(name_raw)
+                if len(name_raw) < 2:
+                    continue
+
                 norm, rtype, num, ext, conf = self.normalizer.normalize(name_raw)
                 if not rtype:
                     continue
+
+                dedup_key = (rtype, round(surface, 2))
+                if dedup_key in seen_surfaces:
+                    continue
+                seen_surfaces[dedup_key] = name_raw
 
                 rooms.append(ExtractedRoom(
                     name_raw=name_raw,
@@ -254,10 +364,9 @@ class SuperExtractor:
                     is_exterior=ext,
                     room_number=num,
                     source=source,
-                    confidence=conf * 0.85,  # Moins fiable que spatial
+                    confidence=conf * 0.85,
                 ))
         return rooms
-
     def _merge_rooms(self, primary, secondary):
         """
         Fusionne deux listes. Primary a priorité.
@@ -294,6 +403,38 @@ class SuperExtractor:
             type_index[(r.room_type, r.room_number)] = r
 
         return list(merged.values())
+    def _clean_room_name(self, name: str) -> str:
+        """
+        Nettoie le nom brut en supprimant le bruit technique des plans.
+        'PP80 PP80 ENTREE' → 'ENTREE'
+        'A ENTREE' → 'ENTREE'
+        """
+        # Supprimer les codes techniques courants
+        noise_patterns = [
+            r"\bPP\d+\b",          # PP80, PP90
+            r"\bPF\w*\b",          # PFOB, PFC
+            r"\bVR\b",             # Volet roulant
+            r"\bOB\b",             # Oscillo-battant
+            r"\bFAV\b",            # Fenêtre
+            r"\bRGT\b",            # Rangement (contexte légende)
+            r"\b\d{2,3}\s*x\s*\d{2,3}\b",  # Dimensions: 90 x 220
+            r"\bfixe\b",
+            r"\bOPALIN\b",
+            r"\bgarde[\-\s]?corps\b",
+            r"\bballon\s*thermo\b",
+        ]
+        
+        cleaned = name
+        for pattern in noise_patterns:
+            cleaned = re.sub(pattern, "", cleaned, flags=re.IGNORECASE)
+        
+        # Supprimer les lettres isolées en début (ex: "A ENTREE" → "ENTREE")
+        cleaned = re.sub(r"^[A-Z]\s+", "", cleaned.strip())
+        
+        # Nettoyer les espaces multiples
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        
+        return cleaned
 
     def _detect_typology(self, rooms):
         bedrooms = sum(1 for r in rooms if r.room_type == RoomType.BEDROOM)
@@ -312,6 +453,178 @@ class SuperExtractor:
         has_garden = any(r.room_type == RoomType.GARDEN for r in rooms)
         has_cellar = any(r.room_type == RoomType.CELLAR for r in rooms)
         return "house" if has_garden and has_cellar else "appartment"
+
+    # def _final_dedup(self, rooms):
+    #     """
+    #     Dédoublonnage final: supprime les pièces avec même type + même surface.
+    #     Garde celle avec la meilleure confiance.
+    #     """
+    #     seen = {}  # (room_type, surface_arrondie) → ExtractedRoom
+    #     deduped = []
+
+    #     for r in rooms:
+    #         key = (r.room_type, round(r.surface, 1))
+
+    #         if key in seen:
+    #             existing = seen[key]
+    #             logger.info(
+    #                 f"  🔄 Doublon final supprimé: '{r.name_raw}' ({r.surface}m²) "
+    #                 f"= '{existing.name_raw}' ({existing.surface}m²)"
+    #             )
+    #             # Garde celui avec meilleure confiance
+    #             if r.confidence > existing.confidence:
+    #                 deduped.remove(existing)
+    #                 seen[key] = r
+    #                 deduped.append(r)
+    #             continue
+
+    #         seen[key] = r
+    #         deduped.append(r)
+
+    #     if len(deduped) < len(rooms):
+    #         logger.info(
+    #             f"  🧹 Dédoublonnage: {len(rooms)} → {len(deduped)} pièces"
+    #         )
+
+    #     return deduped
+
+    def _final_dedup(self, rooms):
+        """
+        Dédoublonnage final: supprime les pièces avec même type + même numéro + même surface.
+        Garde celle avec la meilleure confiance.
+        """
+        seen = {}  # (room_type, room_number, surface_arrondie) → ExtractedRoom
+        deduped = []
+
+        for r in rooms:
+            # Clé incluant le numéro de pièce pour différencier chambre_1 et chambre_2
+            room_num = r.room_number if r.room_number else 0
+            key = (r.room_type, room_num, round(r.surface, 1))
+
+            if key in seen:
+                existing = seen[key]
+                logger.info(
+                    f"  🔄 Doublon final supprimé: '{r.name_raw}' ({r.surface}m²) "
+                    f"= '{existing.name_raw}' ({existing.surface}m²)"
+                )
+                # Garde celui avec meilleure confiance
+                if r.confidence > existing.confidence:
+                    deduped.remove(existing)
+                    seen[key] = r
+                    deduped.append(r)
+                continue
+
+            seen[key] = r
+            deduped.append(r)
+
+        if len(deduped) < len(rooms):
+            logger.info(
+                f"  🧹 Dédoublonnage: {len(rooms)} → {len(deduped)} pièces"
+            )
+
+        return deduped
+    
+    def _filter_by_reference(self, rooms, reference, living_space):
+        if living_space <= 0 or len(rooms) < 3:
+            return rooms
+
+        interior = [r for r in rooms if not r.is_exterior and not r.is_composite]
+        exterior = [r for r in rooms if r.is_exterior]
+
+        calc = sum(r.surface for r in interior)
+        diff = abs(calc - living_space)
+
+        if diff <= 1.0:
+            return rooms
+
+        if calc > living_space * 1.15:
+            logger.info(
+                f"  🔍 Multi-appart détecté: calc={calc:.2f} >> "
+                f"declared={living_space:.2f}. Filtrage..."
+            )
+            best = self._find_best_subset(interior, living_space)
+            if best:
+                # Filtrer les extérieurs aussi: garder seulement
+                # le nombre raisonnable (pas 4 balcons pour 1 appart)
+                filtered_ext = self._filter_exteriors(exterior)
+                result = best + filtered_ext
+                logger.info(
+                    f"  ✅ Filtré: {len(rooms)} → {len(result)} pièces"
+                )
+                return result
+
+        return rooms
+
+    def _filter_exteriors(self, exterior_rooms):
+        """Dédoublonne les extérieurs: garde 1 par type (le plus grand)"""
+        by_type = {}
+        for r in exterior_rooms:
+            if r.room_type not in by_type or r.surface > by_type[r.room_type].surface:
+                by_type[r.room_type] = r
+        return list(by_type.values())
+
+    def _find_best_subset(self, rooms, target):
+        """
+        Trouve le sous-ensemble cohérent dont la somme ≈ target.
+        Priorise la cohérence (pas de doublons de type) avant la somme.
+        """
+        from itertools import combinations
+
+        n = len(rooms)
+        best_diff = float("inf")
+        best_combo = None
+
+        min_size = max(3, n // 2)
+        max_size = min(n, n - 1) if n > 3 else n
+
+        for size in range(min_size, max_size + 1):
+            # Limiter les combinaisons pour éviter explosion
+            if self._comb_count(n, size) > 50000:
+                continue
+
+            for combo in combinations(rooms, size):
+                total = sum(r.surface for r in combo)
+                diff = abs(total - target)
+
+                if diff >= best_diff:
+                    continue
+
+                # Vérifier la cohérence: pas de doublon de type sans numéro
+                if self._has_type_conflict(combo):
+                    continue
+
+                best_diff = diff
+                best_combo = list(combo)
+
+                if diff < 0.5:
+                    return best_combo
+
+        if best_combo and best_diff < 2.0:
+            return best_combo
+        return None
+
+    def _has_type_conflict(self, combo):
+        """
+        Vérifie qu'un sous-ensemble est cohérent:
+        - Pas 2 séjour/cuisine (1 seul par appart)
+        - Pas 2 entrées
+        """
+        unique_types = [
+            RoomType.LIVING_KITCHEN,
+            RoomType.LIVING_ROOM,
+            RoomType.ENTRY,
+            RoomType.RECEPTION,
+        ]
+        for rt in unique_types:
+            count = sum(1 for r in combo if r.room_type == rt)
+            if count > 1:
+                return True  # Conflit
+        return False
+
+    def _comb_count(self, n, r):
+        """Nombre de combinaisons C(n,r)"""
+        from math import comb
+        return comb(n, r)
 
 
 # ═══════════════════════════════════════════════

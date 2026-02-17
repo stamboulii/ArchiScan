@@ -48,7 +48,7 @@ SURFACE_RANGES = {
     RoomType.CIRCULATION: (1.0, 20.0),
     RoomType.STORAGE: (0.5, 15.0),
     RoomType.DRESSING: (1.0, 20.0),
-    RoomType.BALCONY: (1.0, 50.0),
+    RoomType.BALCONY: (1.0, 70.0),
     RoomType.TERRACE: (2.0, 200.0),
     RoomType.GARDEN: (5.0, 5000.0),
     RoomType.LOGGIA: (2.0, 30.0),
