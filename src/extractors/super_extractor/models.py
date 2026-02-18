@@ -108,10 +108,13 @@ class ExtractionResult:
     def annex_surface_calc(self) -> float:
         return round(sum(r.surface for r in self.exterior_rooms), 2)
 
-    def to_legacy_format(self) -> Dict[str, Any]:
+    def to_legacy_format(self, include_raw_text: bool = False) -> Dict[str, Any]:
+        import logging
+        logger = logging.getLogger(__name__)
+        
         surface_detail = {r.name_normalized: r.surface for r in self.rooms}
-
-        return {
+        
+        result = {
             self.reference: {
                 "parcelTypeId": self.property_type,
                 "parcelTypeLabel": self._property_label(),
@@ -154,6 +157,15 @@ class ExtractionResult:
                 },
             }
         }
+        
+        # Debug: afficher la cle et la presence de _validation
+        logger.info(f"to_legacy_format: reference={self.reference}, has_validation={'_validation' in result[self.reference]}")
+        
+        # Ajouter le texte brut seulement si demande
+        if include_raw_text and self.raw_text:
+            result[self.reference]['_raw_text'] = self.raw_text
+        
+        return result
 
     def _property_label(self) -> str:
         return {"appartment": "Appartement", "house": "Maison",

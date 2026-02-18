@@ -277,6 +277,9 @@ class ClaudeVisionExtractor:
         # Normalisation
         normalized = normalize_parcel_data(raw_data)
         
+        # Ajouter le texte brut pour l'interface debug
+        normalized['_raw_text'] = raw_text if raw_text else ""
+        
         logger.info(f"Extraction Claude terminee: {normalized.get('parcelLabel', 'Inconnu')}")
         
         return normalized

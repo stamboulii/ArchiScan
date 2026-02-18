@@ -84,35 +84,32 @@ def _display_main_fields(data: dict, editable: bool, key_prefix: str = ""):
 
 
 def _display_surface_fields(data: dict, editable: bool, key_prefix: str = ""):
-    """Affiche les surfaces annexes."""
-    st.markdown("### Surfaces annexes")
-
+    """Affiche toutes les surfaces (pieces et annexes)."""
+    st.markdown("### Surfaces")
+    
     surface_detail = data.get('surfaceDetail', {})
-
-    if editable:
-        terrace = st.number_input(
-            "Terrasse (m2)", value=surface_detail.get('terrace', 0.0), step=0.01, key=f"{key_prefix}terrace"
-        )
-        balcony = st.number_input(
-            "Balcon (m2)", value=surface_detail.get('balcony', 0.0), step=0.01, key=f"{key_prefix}balcony"
-        )
-        garden = st.number_input(
-            "Jardin (m2)", value=surface_detail.get('garden', 0.0), step=0.01, key=f"{key_prefix}garden"
-        )
-
-        data['surfaceDetail'] = {}
-        if terrace > 0:
-            data['surfaceDetail']['terrace'] = terrace
-        if balcony > 0:
-            data['surfaceDetail']['balcony'] = balcony
-        if garden > 0:
-            data['surfaceDetail']['garden'] = garden
+    
+    if surface_detail:
+        # Afficher toutes les surfaces dans un tableau
+        surfaces_list = []
+        for key, value in surface_detail.items():
+            # Normaliser le nom pour l'affichage
+            display_name = key.replace('_', ' ').title()
+            surfaces_list.append({"Piece": display_name, "Surface (m2)": value})
+        
+        # Trier par surface (decroissant)
+        surfaces_list.sort(key=lambda x: x["Surface (m2)"], reverse=True)
+        
+        # Afficher en tableau
+        import pandas as pd
+        df = pd.DataFrame(surfaces_list)
+        st.dataframe(df, hide_index=True, width='stretch')
+        
+        # Afficher le total
+        total = sum(surface_detail.values())
+        st.markdown(f"**Total:** {total:.2f} m²")
     else:
-        if surface_detail:
-            for key, value in surface_detail.items():
-                st.write(f"**{key.capitalize()}:** {value} m2")
-        else:
-            st.write("*Aucune surface annexe*")
+        st.write("*Aucune surface*")
 
 
 def _display_options(data: dict, editable: bool, key_prefix: str = ""):

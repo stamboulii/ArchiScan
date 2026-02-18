@@ -289,6 +289,9 @@ class ArchitecturePlanExtractor:
         result = parcel.to_dict()
         result['parcelLabel'] = parcel.parcelLabel
         
+        # Ajouter le texte brut pour l'interface debug
+        result['_raw_text'] = text if text else ""
+        
         logger.info(f"Extraction terminee: {parcel.parcelLabel or 'Lot non detecte'}")
         
         return result

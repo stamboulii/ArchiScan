@@ -21,11 +21,17 @@ def export_to_json(data: dict) -> str:
     clean = {}
     for key, value in data.items():
         if isinstance(value, dict):
-            # Creer une copie sans duplicater la cle comme champ
-            parcel_dict = {k: v for k, v in value.items() if not k.startswith('_')}
-            # Ne pas dupliquer parcelLabel comme champ s'il est egal a la cle
-            if parcel_dict.get('parcelLabel') == key:
-                parcel_dict.pop('parcelLabel', None)
+            parcel_dict = {}
+            for k, v in value.items():
+                # Garder seulement _validation (pas _raw_text ni _extraction_meta)
+                if k == '_validation':
+                    parcel_dict[k] = v
+                # Ne pas dupliquer parcelLabel comme champ s'il est egal a la cle
+                elif k == 'parcelLabel' and v == key:
+                    continue
+                # Filtrer les autres champs_
+                elif not k.startswith('_'):
+                    parcel_dict[k] = v
             clean[key] = parcel_dict
         else:
             clean[key] = value
@@ -92,7 +98,18 @@ def _display_clean_json():
     display_data = {}
     for k, v in st.session_state.all_parcels.items():
         if isinstance(v, dict):
-            parcel_dict = {dk: dv for dk, dv in v.items() if not dk.startswith('_')}
+            # Garder uniquement _validation (pas _raw_text ni _extraction_meta)
+            parcel_dict = {}
+            for dk, dv in v.items():
+                # Garder seulement _validation
+                if dk == '_validation':
+                    parcel_dict[dk] = dv
+                # Ne pas dupliquer parcelLabel comme champ s'il est egal a la cle
+                elif dk == 'parcelLabel' and dv == k:
+                    continue
+                # Filtrer les autres champs_
+                elif not dk.startswith('_'):
+                    parcel_dict[dk] = dv
             # Ne pas dupliquer parcelLabel comme champ s'il est egal a la cle
             if parcel_dict.get('parcelLabel') == k:
                 parcel_dict.pop('parcelLabel', None)

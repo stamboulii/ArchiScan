@@ -87,7 +87,7 @@ class SuperExtractor:
         # ── ÉTAPE 1: Extraction texte brut ────────────────────
         text_data = self.text_extractor.extract(pdf_path)
         primary_text = text_data["text_pymupdf"] or text_data["text_ocr"]
-        result.raw_text = primary_text[:1000]
+        result.raw_text = primary_text
         logger.info(
             f"  📄 Texte: {len(primary_text)} chars, "
             f"source={text_data['primary_source']}"

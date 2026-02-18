@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 
 class ExtractionRequest(BaseModel):
     """Request model pour l'extraction."""
-    method: str = Field(default="auto", description="Methode: auto, tesseract, claude")
+    method: str = Field(default="auto", description="Methode: auto, tesseract, claude, super")
     validate: bool = Field(default=True, description="Valider les donnees extraites")
 
 
@@ -172,11 +172,13 @@ async def extract_single(
     
     Args:
         file: Fichier a traiter (image ou PDF)
-        method: Methode d'extraction (auto, tesseract, claude)
+        method: Methode d'extraction (auto, tesseract, claude, super)
+        - method=super retourne le format SuperExtractor directement
         validate: Valider les donnees extraites
         
     Returns:
-        ExtractionResponse avec les donnees extraites
+        Si method=super: format SuperExtractor {"LOT_1": {...}}
+        Sinon: ExtractionResponse standard
     """
     import time
     start_time = time.perf_counter()
@@ -219,18 +221,31 @@ async def extract_single(
         # Extraction
         extractor = get_extractor()
         
-        if method != "auto":
-            from ..core.config import PHASE_TESSERACT, PHASE_CLAUDE
-            method_map = {
-                'tesseract': PHASE_TESSERACT,
-                'claude': PHASE_CLAUDE,
-            }
-            extractor.force_method = method_map.get(method)
-        
-        result = extractor.extract(image_path)
-        
-        # Normalisation
-        normalized = normalize_parcel_data(result)
+        # Use SuperExtractor if method is 'super'
+        if method == "super":
+            from ..extractors.super_extractor.super_extractor import SuperExtractor
+            super_extractor = SuperExtractor()
+            result = super_extractor.extract(str(temp_path))
+            # Always return legacy format for SuperExtractor
+            result_dict = result.to_legacy_format()
+            import json
+            return JSONResponse(
+                content=result_dict,
+                media_type="application/json"
+            )
+        else:
+            if method != "auto":
+                from ..core.config import PHASE_TESSERACT, PHASE_CLAUDE
+                method_map = {
+                    'tesseract': PHASE_TESSERACT,
+                    'claude': PHASE_CLAUDE,
+                }
+                extractor.force_method = method_map.get(method)
+            
+            result = extractor.extract(image_path)
+            
+            # Normalisation
+            normalized = normalize_parcel_data(result)
         
         # Validation si demandee
         validation = None

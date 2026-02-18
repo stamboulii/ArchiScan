@@ -289,7 +289,11 @@ class HybridExtractor:
         Returns:
             Dict avec les donnees extraites
         """
+        import logging
+        logger = logging.getLogger(__name__)
+        
         method = self._determine_method()
+        logger.info(f"extract_from_image: method={method}, force_method={self.force_method}")
         logger.info(f"Extraction avec methode: {method}")
         
         if method == PHASE_CLAUDE:
@@ -328,23 +332,34 @@ class HybridExtractor:
         
         return result
     
-    def extract_from_pdf(self, pdf_path: str) -> Dict:
+    def extract_from_pdf(self, pdf_path: str, force_method: str = None) -> Dict:
         """
         Extrait les donnees d'un fichier PDF en utilisant PyMuPDF.
         Methode preferentielle pour les PDF avec texte extractible.
         
         Args:
             pdf_path: Chemin vers le fichier PDF
+            force_method: Methode forcee (optionnel)
             
         Returns:
             Dict avec les donnees extraites
         """
         import time
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        logger.info(f"extract_from_pdf DEBUT: pdf_path={pdf_path}")
+        
         start_time = time.time()
         
         try:
-            # Check if SuperExtractor is requested
-            if self.force_method == PHASE_SUPER:
+            # Check if SuperExtractor is requested (prioriser le parametre, puis self.force_method)
+            method_to_use = force_method or self.force_method
+            
+            # Debug: ajouter logger
+            logger.info(f"extract_from_pdf: force_method={force_method}, self.force_method={self.force_method}, method_to_use={method_to_use}")
+            
+            if method_to_use == PHASE_SUPER:
                 return self._extract_with_super(pdf_path)
             
             # Verifier si PyMuPDF est disponible
@@ -391,7 +406,7 @@ class HybridExtractor:
                 'duration_ms': duration_ms,
                 'text_length': len(result.cleaned_text),
             }
-            extracted_data['_raw_text'] = result.cleaned_text[:500] if result.cleaned_text else ""
+            extracted_data['_raw_text'] = result.cleaned_text if result.cleaned_text else ""
             
             # Sauvegarder dans le data store
             try:
@@ -460,6 +475,11 @@ class HybridExtractor:
             Dict avec les donnees extraites
         """
         import time
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        logger.info(f"_extract_with_super DEBUT: {image_path}")
+        
         start_time = time.time()
         
         try:
@@ -474,16 +494,26 @@ class HybridExtractor:
             
             # Verifier si validation OK
             first_key = list(result.keys())[0] if result else None
-            validation = result.get(first_key, {}).get('_validation') if first_key else None
+            nested_data = result.get(first_key, {}) if first_key else {}
+            validation = nested_data.get('_validation') if nested_data else None
             
-            # Creer la structure standard
-            extracted_data = result
+            # Aplatir la structure pour compatibilite UI
+            # SuperExtractor retourne { "A001": { ... } } mais UI attend { ... } au niveau racine
+            extracted_data = nested_data.copy() if nested_data else {}
             extracted_data['_extraction_meta'] = {
                 'method': PHASE_SUPER,
                 'confidence': 0.9 if not validation or validation.get('is_valid', False) else 0.7,
                 'duration_ms': duration_ms,
                 'validation': validation
             }
+            
+            # Preserver _validation si present dans les donnees imbriquees
+            if '_validation' in nested_data:
+                extracted_data['_validation'] = nested_data['_validation']
+            
+            # Ajouter le texte brut si present
+            if extraction_result.raw_text:
+                extracted_data['_raw_text'] = extraction_result.raw_text
             
             return extracted_data
             

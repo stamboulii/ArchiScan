@@ -151,11 +151,25 @@ def _render_batch_upload(extractor):
                         # Verifier si on doit utiliser PyMuPDF
                         force_method = st.session_state.get('force_method')
                         
-                        # Utiliser extract_from_pdf pour les fichiers PDF UNIQUEMENT si PyMuPDF est selectionne
-                        if temp_path.lower().endswith('.pdf') and force_method == 'pymupdf':
-                            result = extractor.extract_from_pdf(temp_path)
+                        # Utiliser extract_from_pdf pour les fichiers PDF UNIQUEMENT si PyMuPDF ou Super est selectionne
+                        if temp_path.lower().endswith('.pdf') and force_method in ['pymupdf', 'super']:
+                            result = extractor.extract_from_pdf(temp_path, force_method=force_method)
                         else:
                             result = extractor.extract_from_image(temp_path)
+                        
+                        # Aplatir les donnees si necessaire
+                        if result and len(result) > 0:
+                            for key in list(result.keys()):
+                                if isinstance(result[key], dict):
+                                    # Verifier si c'est une cle de type reference
+                                    if key.startswith('LOT_') or (len(key) <= 4 and key[0].isalpha()):
+                                        nested_data = result[key]
+                                        result = nested_data.copy()
+                                        result['_extraction_meta'] = {'method': force_method or 'unknown'}
+                                        if '_validation' not in result:
+                                            result['_validation'] = {'is_valid': True, 'errors': [], 'warnings': []}
+                                        break
+                        
                         parcel_id = result.get('parcelLabel', f'LOT_{i+1:03d}')
                         
                         # Stocker l'extraction_id pour la validation
@@ -269,21 +283,50 @@ def _run_extraction(extractor, temp_path: str):
             # Verifier si on doit utiliser PyMuPDF ou SuperExtractor (both for PDFs)
             force_method = st.session_state.get('force_method')
             
+            logger.info(f"_run_extraction: force_method={force_method}, temp_path={temp_path}")
+            
             # Utiliser extract_from_pdf pour les fichiers PDF UNIQUEMENT si PyMuPDF ou Super est selectionne
             if temp_path.lower().endswith('.pdf') and force_method in [PHASE_PYMUPDF, PHASE_SUPER]:
-                result = extractor.extract_from_pdf(temp_path)
+                result = extractor.extract_from_pdf(temp_path, force_method=force_method)
             else:
                 result = extractor.extract_from_image(temp_path)
 
+            logger.info(f"Result keys after extraction: {list(result.keys())}")
+
             st.session_state.extracted_data = result
+            
+            # Forcer l'aplatissement si la cle resemble a une reference
+            if result and len(result) > 0:
+                for key in list(result.keys()):
+                    if isinstance(result[key], dict):
+                        # Verifier si c'est une cle de type reference (LOT_*, A*, B*, T*)
+                        if key.startswith('LOT_') or (len(key) <= 4 and key[0].isalpha()):
+                            nested_data = result[key]
+                            logger.info(f"Flattening key: {key}")
+                            st.session_state.extracted_data = nested_data.copy()
+                            st.session_state.extracted_data['_extraction_meta'] = {'method': force_method or 'super'}
+                            
+                            # Ajouter _validation - TOUJOURS
+                            if '_validation' in nested_data:
+                                st.session_state.extracted_data['_validation'] = nested_data['_validation']
+                                logger.info(f"_validation trouve: {nested_data['_validation']}")
+                            else:
+                                st.session_state.extracted_data['_validation'] = {
+                                    'is_valid': True,
+                                    'errors': [],
+                                    'warnings': []
+                                }
+                                logger.info("_validation non trouve, utilisation du defaut")
+                            break
+            
             st.session_state.last_extraction_id = result.get('_extraction_id')
 
-            # Ajout a la collection
-            parcel_id = result.get(
+            # Ajout a la collection (utiliser les donneesaplaties)
+            parcel_id = st.session_state.extracted_data.get(
                 'parcelLabel',
-                f'LOT_{len(st.session_state.all_parcels) + 1}'
+                f"LOT_{len(st.session_state.all_parcels) + 1}"
             )
-            st.session_state.all_parcels[parcel_id] = result
+            st.session_state.all_parcels[parcel_id] = st.session_state.extracted_data
 
             # Message de succes avec methode
             from ui.styles import METHOD_LABELS
@@ -297,12 +340,42 @@ def _run_extraction(extractor, temp_path: str):
             if 'fallback_reason' in meta:
                 st.warning(f"Note: {meta['fallback_reason']}")
 
-            # Debug OCR
-            debug_text_path = DEBUG_DIR / 'extracted_text_debug.txt'
-            if debug_text_path.exists():
+            # Debug OCR - afficher le texte brut et la validation de l'extraction
+            raw_text = st.session_state.extracted_data.get('_raw_text', '')
+            validation = st.session_state.extracted_data.get('_validation', {})
+            
+            # Afficher validation en premier (plus importante)
+            if validation:
+                with st.expander("Validation et Texte OCR (debug)"):
+                    st.subheader("Validation")
+                    is_valid = validation.get('is_valid', False)
+                    if is_valid:
+                        st.success("✓ Extraction valide")
+                    else:
+                        st.error("✗ Extraction invalide")
+                        
+                    errors = validation.get('errors', [])
+                    if errors:
+                        st.markdown("**Erreurs:**")
+                        for err in errors:
+                            st.markdown(f"- {err}")
+                            
+                    warnings = validation.get('warnings', [])
+                    if warnings:
+                        st.markdown("**Avertissements:**")
+                        for warn in warnings:
+                            st.markdown(f"- {warn}")
+                    
+                    st.markdown("---")
+                    st.subheader("Texte OCR brut")
+                    if raw_text:
+                        st.code(raw_text, language='text')
+                    else:
+                        st.write("*Aucun texte OCR disponible*")
+            elif raw_text:
+                # Fallback: seulement le texte OCR
                 with st.expander("Texte OCR brut (debug)"):
-                    with open(str(debug_text_path), 'r', encoding='utf-8') as f:
-                        st.code(f.read())
+                    st.code(raw_text, language='text')
 
         except Exception as e:
             st.error(f"Erreur lors de l'extraction: {str(e)}")
