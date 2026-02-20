@@ -295,46 +295,70 @@ def _run_extraction(extractor, temp_path: str):
 
             st.session_state.extracted_data = result
             
-            # Forcer l'aplatissement si la cle resemble a une reference
-            if result and len(result) > 0:
-                for key in list(result.keys()):
-                    if isinstance(result[key], dict):
-                        # Verifier si c'est une cle de type reference (LOT_*, A*, B*, T*)
-                        if key.startswith('LOT_') or (len(key) <= 4 and key[0].isalpha()):
-                            nested_data = result[key]
-                            logger.info(f"Flattening key: {key}")
-                            st.session_state.extracted_data = nested_data.copy()
-                            st.session_state.extracted_data['_extraction_meta'] = {'method': force_method or 'super'}
-                            
-                            # Ajouter _validation - TOUJOURS
-                            if '_validation' in nested_data:
-                                st.session_state.extracted_data['_validation'] = nested_data['_validation']
-                                logger.info(f"_validation trouve: {nested_data['_validation']}")
-                            else:
-                                st.session_state.extracted_data['_validation'] = {
-                                    'is_valid': True,
-                                    'errors': [],
-                                    'warnings': []
-                                }
-                                logger.info("_validation non trouve, utilisation du defaut")
-                            break
+            # Detecter si c'est un resultat multi-pages (plusieurs references)
+            plan_refs = [k for k in result.keys()
+                        if isinstance(result[k], dict) and
+                        (k.startswith('LOT_') or k.startswith('PAGE_') or
+                         (len(k) <= 5 and k[0].isalpha() and not k.startswith('_')))]
+            
+            if len(plan_refs) > 1:
+                # Multi-pages: ajouter tous les plans a la collection
+                logger.info(f"Multi-pages detecte: {len(plan_refs)} plans")
+                for ref in plan_refs:
+                    nested_data = result[ref]
+                    parcel_data = nested_data.copy()
+                    parcel_data['parcelLabel'] = ref
+                    parcel_data['_extraction_meta'] = result.get('_extraction_meta', {'method': force_method or 'super'})
+                    if '_validation' in nested_data:
+                        parcel_data['_validation'] = nested_data['_validation']
+                    st.session_state.all_parcels[ref] = parcel_data
+                
+                # Afficher le premier plan comme donnees courantes
+                first_ref = plan_refs[0]
+                st.session_state.extracted_data = st.session_state.all_parcels[first_ref]
+                
+            elif len(plan_refs) == 1:
+                # Un seul plan: aplatir
+                key = plan_refs[0]
+                nested_data = result[key]
+                logger.info(f"Flattening key: {key}")
+                st.session_state.extracted_data = nested_data.copy()
+                st.session_state.extracted_data['_extraction_meta'] = result.get('_extraction_meta', {'method': force_method or 'super'})
+                
+                # Ajouter _validation - TOUJOURS
+                if '_validation' in nested_data:
+                    st.session_state.extracted_data['_validation'] = nested_data['_validation']
+                    logger.info(f"_validation trouve: {nested_data['_validation']}")
+                else:
+                    st.session_state.extracted_data['_validation'] = {
+                        'is_valid': True,
+                        'errors': [],
+                        'warnings': []
+                    }
+                    logger.info("_validation non trouve, utilisation du defaut")
+                
+                # Ajout a la collection
+                parcel_id = st.session_state.extracted_data.get('parcelLabel', key)
+                st.session_state.all_parcels[parcel_id] = st.session_state.extracted_data
             
             st.session_state.last_extraction_id = result.get('_extraction_id')
-
-            # Ajout a la collection (utiliser les donneesaplaties)
-            parcel_id = st.session_state.extracted_data.get(
-                'parcelLabel',
-                f"LOT_{len(st.session_state.all_parcels) + 1}"
-            )
-            st.session_state.all_parcels[parcel_id] = st.session_state.extracted_data
 
             # Message de succes avec methode
             from ui.styles import METHOD_LABELS
             meta = result.get('_extraction_meta', {})
             method = meta.get('method', 'inconnu')
-            st.success(
-                f"Extraction reussie via {METHOD_LABELS.get(method, method)}!"
-            )
+            
+            # Afficher le nombre de plans si multi-pages
+            pages_count = meta.get('pages_count', 0)
+            if pages_count > 1:
+                st.success(
+                    f"Extraction reussie via {METHOD_LABELS.get(method, method)}! "
+                    f"({pages_count} plans trouves)"
+                )
+            else:
+                st.success(
+                    f"Extraction reussie via {METHOD_LABELS.get(method, method)}!"
+                )
             
             # Afficher la raison du fallback si present
             if 'fallback_reason' in meta:

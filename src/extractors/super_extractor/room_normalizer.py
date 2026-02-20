@@ -65,6 +65,22 @@ class RoomNormalizer:
             (r"^(ENTREE\s*/\s*DGT|ENTR[ÉEée]E\s*/\s*D[ÉE]GAGEMENT|"
             r"HALL\s*/\s*DGT|ENTR[ÉEée]E\s*/\s*CIRCULATION)$",
             "entree", RoomType.ENTRY, False),
+            
+            # === PLACARD (ajoute) ===
+            (r"^(PL|PLACARD|RANGEMENT|DRESSING|ARMOIRE)$",
+            "placard", RoomType.STORAGE, False),
+            
+            # === RANGEMENT (ajoute) ===
+            (r"^(RANGEMENT|STOCKAGE|DEBARRAS)$",
+            "rangement", RoomType.STORAGE, False),
+            
+            # === RANGEMENT avec numero ===
+            (r"^(RANGEMENT|PLACARD|DRESSING)\s*(\d+)$",
+            "rangement_{n}", RoomType.STORAGE, False),
+            
+            # === PI/Pl (placard abrege OCR) ===
+            (r"^(PI|PLC)$",
+            "placard", RoomType.STORAGE, False),
 
             # ══════════════════════════════════════════
             # ENTRÉE / HALL

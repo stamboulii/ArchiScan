@@ -483,39 +483,74 @@ class HybridExtractor:
         start_time = time.time()
         
         try:
-            # Utiliser SuperExtractor
-            extraction_result = self.super_extractor.extract(image_path)
+            # Verifier si c'est un PDF multi-pages
+            is_multipage = False
+            if str(image_path).lower().endswith('.pdf'):
+                try:
+                    import fitz
+                    doc = fitz.open(str(image_path))
+                    is_multipage = len(doc) > 1
+                    doc.close()
+                except:
+                    pass
             
-            # Convert ExtractionResult to dict via legacy format
-            result = extraction_result.to_legacy_format()
-            
-            # Ajouter les metadonnees
-            duration_ms = (time.time() - start_time) * 1000
-            
-            # Verifier si validation OK
-            first_key = list(result.keys())[0] if result else None
-            nested_data = result.get(first_key, {}) if first_key else {}
-            validation = nested_data.get('_validation') if nested_data else None
-            
-            # Aplatir la structure pour compatibilite UI
-            # SuperExtractor retourne { "A001": { ... } } mais UI attend { ... } au niveau racine
-            extracted_data = nested_data.copy() if nested_data else {}
-            extracted_data['_extraction_meta'] = {
-                'method': PHASE_SUPER,
-                'confidence': 0.9 if not validation or validation.get('is_valid', False) else 0.7,
-                'duration_ms': duration_ms,
-                'validation': validation
-            }
-            
-            # Preserver _validation si present dans les donnees imbriquees
-            if '_validation' in nested_data:
-                extracted_data['_validation'] = nested_data['_validation']
-            
-            # Ajouter le texte brut si present
-            if extraction_result.raw_text:
-                extracted_data['_raw_text'] = extraction_result.raw_text
-            
-            return extracted_data
+            if is_multipage:
+                # Extraire toutes les pages
+                all_results = self.super_extractor.extract_all_pages(image_path)
+                
+                if not all_results:
+                    raise ExtractionError("Aucun plan detecte dans le PDF")
+                
+                # Combiner tous les resultats en un seul dict
+                duration_ms = (time.time() - start_time) * 1000
+                combined = {}
+                for ref, extraction_result in all_results.items():
+                    page_data = extraction_result.to_legacy_format()
+                    combined.update(page_data)
+                
+                # Ajouter les metadonnees globales
+                combined['_extraction_meta'] = {
+                    'method': PHASE_SUPER,
+                    'confidence': 0.7,
+                    'duration_ms': duration_ms,
+                    'pages_count': len(all_results)
+                }
+                
+                return combined
+            else:
+                # Extraction simple (une seule page)
+                extraction_result = self.super_extractor.extract(image_path)
+                
+                # Convert ExtractionResult to dict via legacy format
+                result = extraction_result.to_legacy_format()
+                
+                # Ajouter les metadonnees
+                duration_ms = (time.time() - start_time) * 1000
+                
+                # Verifier si validation OK
+                first_key = list(result.keys())[0] if result else None
+                nested_data = result.get(first_key, {}) if first_key else {}
+                validation = nested_data.get('_validation') if nested_data else None
+                
+                # Aplatir la structure pour compatibilite UI
+                # SuperExtractor retourne { "A001": { ... } } mais UI attend { ... } au niveau racine
+                extracted_data = nested_data.copy() if nested_data else {}
+                extracted_data['_extraction_meta'] = {
+                    'method': PHASE_SUPER,
+                    'confidence': 0.9 if not validation or validation.get('is_valid', False) else 0.7,
+                    'duration_ms': duration_ms,
+                    'validation': validation
+                }
+                
+                # Preserver _validation si present dans les donnees imbriquees
+                if '_validation' in nested_data:
+                    extracted_data['_validation'] = nested_data['_validation']
+                
+                # Ajouter le texte brut si present
+                if extraction_result.raw_text:
+                    extracted_data['_raw_text'] = extraction_result.raw_text
+                
+                return extracted_data
             
         except Exception as e:
             logger.error(f"Erreur SuperExtractor: {e}")

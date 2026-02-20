@@ -22,6 +22,7 @@ class SpatialExtractor:
     SKIP_KEYWORDS = [
         "BATIMENT", "APPARTEMENT", "NIVEAU", "TYPE", "LEGENDE",
         "DATE", "IND", "PLAN", "ECHELLE", "SCCV", "VENTE", "TOTAL",
+        "SURF. LOT", "SURF.LOT", "N° LOT", "N°LOT", "LOT:",  # Filtres pour PDFs scannés
     ]
 
     # Types de pièces uniques (on ne veut qu'une seule occurrence - la plus grande)
@@ -137,7 +138,10 @@ class SpatialExtractor:
     def _analyze_page(self, page_data: Dict, reference_hint: Optional[str] = None) -> Dict:
         width = page_data.get("width", 1000)
         height = page_data.get("height", 1000)
+        
+        # Gerer les deux formats: blocks (PyMuPDF) et lines (OCR)
         blocks = page_data.get("blocks", [])
+        ocr_lines = page_data.get("lines", [])
 
         result = {
             "table_rows": [],
@@ -147,7 +151,11 @@ class SpatialExtractor:
             "source": "spatial",
         }
 
-        text_lines = self._extract_text_lines(blocks)
+        # Si on a des lignes OCR, les utiliser directement
+        if ocr_lines:
+            text_lines = self._convert_ocr_lines(ocr_lines)
+        else:
+            text_lines = self._extract_text_lines(blocks)
         if not text_lines:
             logger.info("  ⚠️ Aucune ligne de texte extraite")
             return result
@@ -409,6 +417,19 @@ class SpatialExtractor:
                             best_dist = dist
                             best_match = line
         return best_match
+
+    def _convert_ocr_lines(self, ocr_lines: List[Dict]) -> List[Dict]:
+        """Convertit les lignes OCR au format attendu par le spatial extractor"""
+        lines = []
+        for line in ocr_lines:
+            lines.append({
+                "text": line.get("text", ""),
+                "x0": line.get("x0", 0),
+                "y0": line.get("y0", 0),
+                "x1": line.get("x1", 0),
+                "y1": line.get("y0", 0) + 20,  # Estimate height
+            })
+        return lines
 
     def _extract_text_lines(self, blocks: List[Dict]) -> List[Dict]:
         """Extrait lignes de texte avec coordonnées depuis blocks PyMuPDF"""

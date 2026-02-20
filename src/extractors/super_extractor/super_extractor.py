@@ -48,6 +48,7 @@ class SuperExtractor:
     SKIP_KEYWORDS = [
         "TOTAL", "SURFACE HABITABLE", "SURFACE ANNEXE",
         "PLAN", "VENTE", "DATE", "IND", "ECHELLE",
+        "SURF", "LOT", "M00", "TYPE:", "N°",  # Filtres pour PDFs scannes
     ]
 
     def __init__(self, use_ocr: bool = True, tesseract_path: Optional[str] = None):
@@ -64,16 +65,162 @@ class SuperExtractor:
         self, pdf_path: str, reference_hint: Optional[str] = None
     ) -> ExtractionResult:
         """
-        Point d'entrée principal.
+        Point d'entree principal.
 
         Args:
             pdf_path: Chemin vers le fichier PDF
-            reference_hint: Référence attendue (ex: "A008")
+            reference_hint: Reference attendue (ex: "A008")
 
         Returns:
             ExtractionResult (appeler .to_legacy_format() pour obtenir un dict)
         """
-        logger.info(f"🔍 SuperExtractor v3: {pdf_path}")
+        # Verifier si c'est un PDF multi-pages
+        path = Path(pdf_path)
+        if path.suffix.lower() == '.pdf':
+            try:
+                import fitz
+                doc = fitz.open(pdf_path)
+                page_count = len(doc)
+                doc.close()
+                
+                if page_count > 1:
+                    logger.info(f"PDF detecte avec {page_count} pages - analyse multi-pages")
+                    return self._extract_multipage(pdf_path, reference_hint)
+            except:
+                pass
+        
+        # Extraction simple (une seule page)
+        return self._extract_single_page(pdf_path, reference_hint)
+    
+    def _extract_multipage(self, pdf_path: str, reference_hint: str = None) -> ExtractionResult:
+        """Extrait les donnees de plusieurs pages PDF - retourne le premier plan trouve."""
+        all_results = self.extract_all_pages(pdf_path, reference_hint)
+        
+        if not all_results:
+            result = ExtractionResult()
+            result.validation_errors.append("Aucun plan detecte dans les pages")
+            return result
+        
+        # Retourner le premier resultat
+        first_ref = list(all_results.keys())[0]
+        return all_results[first_ref]
+    
+    def extract_all_pages(self, pdf_path: str, reference_hint: str = None) -> Dict[str, 'ExtractionResult']:
+        """Extrait les donnees de toutes les pages d'un PDF multi-pages.
+        
+        Returns:
+            Dict[reference, ExtractionResult] - tous les plans trouves
+        """
+        import fitz
+        
+        doc = fitz.open(pdf_path)
+        page_count = len(doc)
+        doc.close()
+        
+        all_results = {}
+        plans_found = 0
+        
+        for page_num in range(page_count):
+            logger.info(f"  Analyse page {page_num + 1}/{page_count}...")
+            
+            # Verifier si cette page contient un plan
+            if self._is_plan_page(pdf_path, page_num):
+                logger.info(f"    ✅ Page {page_num + 1}: plan detecte")
+                plans_found += 1
+                
+                # Extraire les donnees de cette page
+                result = self._extract_single_page(pdf_path, reference_hint, page_num)
+                
+                # Ajouter au resultat global
+                if result.reference and result.reference != "UNKNOWN":
+                    all_results[result.reference] = result
+                elif result.reference == "UNKNOWN":
+                    # Utiliser un nom unique pour les plans sans reference
+                    key = f"PAGE_{page_num + 1}"
+                    all_results[key] = result
+            else:
+                logger.info(f"    ⏭️ Page {page_num + 1}: pas un plan")
+        
+        logger.info(f"  📊 Total: {plans_found} plan(s) trouve(s) sur {page_count} pages")
+        return all_results
+    
+    def _is_plan_page(self, pdf_path: str, page_num: int) -> bool:
+        """Detecte si une page contient un plan d'architecture."""
+        import fitz
+        import re
+        
+        try:
+            doc = fitz.open(pdf_path)
+            page = doc[page_num]
+            text = page.get_text()
+            doc.close()
+            
+            # Essayer aussi OCR si le texte PyMuPDF est vide
+            if len(text.strip()) < 20:
+                logger.info(f"    Page {page_num + 1}: texte PyMuPDF faible, utilisation OCR...")
+                # Extraire texte OCR pour cette page seulement
+                text = self._extract_ocr_single_page(pdf_path, page_num)
+            
+            # Indicateurs d'un plan d'architecture
+            lot_patterns = [
+                r'\b[A-Z]\d{3}\b',  # A008
+                r'\bLOT_\d+\b',    # LOT_1
+                r'\bT\d+\b',       # T1, T2, T3
+                r'\b\d+ pieces\b',  # 3 pieces
+                r'\bsurface\b',     # mot surface
+            ]
+            
+            score = 0
+            for pattern in lot_patterns:
+                if re.search(pattern, text, re.IGNORECASE):
+                    score += 1
+            
+            # Verifier les mots cles d'un plan
+            plan_keywords = ['appartement', 'chambre', 'sejour', 'cuisine', 'sdb', 'wc', 
+                           'terrasse', 'balcon', 'etage', 'rdc', 'surface', 'habitable']
+            keyword_count = sum(1 for kw in plan_keywords if kw in text.lower())
+            
+            # Decision: c'est un plan si score >= 2 ou (score >= 1 et keyword_count >= 2)
+            is_plan = score >= 2 or (score >= 1 and keyword_count >= 2)
+            
+            logger.info(f"    Page {page_num + 1}: score={score}, keywords={keyword_count}, is_plan={is_plan}")
+            
+            return is_plan
+            
+        except Exception as e:
+            logger.warning(f"Erreur detection plan page {page_num}: {e}")
+            return False
+    
+    def _extract_ocr_single_page(self, pdf_path: str, page_num: int) -> str:
+        """Extrait le texte OCR pour une seule page."""
+        try:
+            import fitz
+            from PIL import Image, ImageEnhance, ImageFilter
+            import pytesseract
+            
+            doc = fitz.open(pdf_path)
+            page = doc[page_num]
+            pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
+            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+            doc.close()
+            
+            # Preprocessing
+            img_gray = img.convert('L')
+            enhancer = ImageEnhance.Contrast(img_gray)
+            img_gray = enhancer.enhance(2.0)
+            img_gray = img_gray.filter(ImageFilter.SHARPEN)
+            
+            # OCR
+            text = pytesseract.image_to_string(img_gray, lang="fra+eng", config="--oem 3 --psm 3")
+            return text
+        except Exception as e:
+            logger.warning(f"Erreur OCR page {page_num}: {e}")
+            return ""
+    
+    def _extract_single_page(self, pdf_path: str, reference_hint: str = None, page_num: int = None) -> ExtractionResult:
+        """Extrait les donnees d'une seule page."""
+        page_info = f" (page {page_num + 1})" if page_num is not None else ""
+        logger.info(f"🔍 SuperExtractor v3: {pdf_path}{page_info}")
         result = ExtractionResult()
         path = Path(pdf_path)
 
@@ -85,7 +232,7 @@ class SuperExtractor:
         self.normalizer.reset()
 
         # ── ÉTAPE 1: Extraction texte brut ────────────────────
-        text_data = self.text_extractor.extract(pdf_path)
+        text_data = self.text_extractor.extract(pdf_path, page_num=page_num)
         primary_text = text_data["text_pymupdf"] or text_data["text_ocr"]
         result.raw_text = primary_text
         logger.info(
@@ -93,9 +240,9 @@ class SuperExtractor:
             f"source={text_data['primary_source']}"
         )
 
-        # ── ÉTAPE 2: Extraction spatiale (tableau récap) ──────
+        # ── ETAPE 2: Extraction spatiale (tableau récap) ──────
         spatial_data = self.spatial_extractor.extract_from_pages(
-            text_data["pages_data"], 
+            text_data.get("ocr_pages_data") or text_data["pages_data"], 
             reference_hint=reference_hint
         )
         spatial_rows = spatial_data["table_rows"]
