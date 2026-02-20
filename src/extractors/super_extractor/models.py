@@ -90,6 +90,7 @@ class ExtractionResult:
     sources: Dict[str, str] = field(default_factory=dict)
     raw_text: str = ""
     promoter_detected: str = ""
+    niveaux: List[str] = field(default_factory=list)
 
     @property
     def interior_rooms(self) -> List[ExtractedRoom]:
@@ -149,6 +150,7 @@ class ExtractionResult:
                     "promoter": self.promoter_detected,
                     "address": self.address,
                     "program": self.program_name,
+                    "niveaux": self.niveaux,
                 },
                 "_validation": {
                     "is_valid": len(self.validation_errors) == 0,

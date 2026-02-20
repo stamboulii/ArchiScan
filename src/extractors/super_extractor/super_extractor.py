@@ -133,7 +133,14 @@ class SuperExtractor:
                 
                 # Ajouter au resultat global
                 if result.reference and result.reference != "UNKNOWN":
-                    all_results[result.reference] = result
+                    if result.reference in all_results:
+                        # Même référence sur plusieurs pages → maison multi-niveaux (RDC + étage)
+                        logger.info(f"    🏠 Multi-niveaux: fusion '{result.reference}' (page {page_num + 1})")
+                        all_results[result.reference] = self._merge_floor_results(
+                            all_results[result.reference], result
+                        )
+                    else:
+                        all_results[result.reference] = result
                 elif result.reference == "UNKNOWN":
                     # Utiliser un nom unique pour les plans sans reference
                     key = f"PAGE_{page_num + 1}"
@@ -330,6 +337,18 @@ class SuperExtractor:
         result.floor = meta.get("floor", "")
         result.building = meta.get("building", "")
         result.promoter_detected = meta.get("promoter", "")
+
+        # Niveaux lisibles (ex: "RDC" → "Rez-de-chaussée")
+        _floor_labels = {
+            "RDC": "Rez-de-chaussée",
+            "R+1": "Étage",
+            "R+2": "2ème étage",
+            "R+3": "3ème étage",
+        }
+        if result.floor:
+            result.niveaux = [_floor_labels.get(result.floor, result.floor)]
+        else:
+            result.niveaux = []
         result.address = meta.get("address", "")
 
         # Surfaces: spatial a priorité sur metadata
@@ -379,6 +398,103 @@ class SuperExtractor:
         return result
 
     # ─── Méthodes internes ────────────────────────────────
+
+    def _merge_floor_results(self, base: 'ExtractionResult', other: 'ExtractionResult') -> 'ExtractionResult':
+        """
+        Fusionne deux ExtractionResult de la même référence correspondant à
+        des niveaux différents (ex: RDC + 1er étage d'une maison).
+
+        Contrairement à _merge_rooms(), cette fusion est permissive sur les
+        doublons de type (deux WC sur deux niveaux sont deux pièces distinctes).
+        """
+        merged = ExtractionResult()
+
+        # ── Métadonnées ──────────────────────────────────────
+        merged.reference = base.reference
+        merged.building = base.building or other.building
+        merged.promoter_detected = base.promoter_detected or other.promoter_detected
+        merged.address = base.address or other.address
+        merged.program_name = base.program_name or other.program_name
+
+        # ── Niveaux et étage ─────────────────────────────────
+        # Combiner les niveaux des deux résultats
+        merged.niveaux = list(dict.fromkeys(base.niveaux + other.niveaux))  # ordre préservé, sans doublons
+        # Étiquette synthétique du niveau (ex: "RDC+1")
+        floors = [f for f in [base.floor, other.floor] if f]
+        if len(floors) >= 2:
+            merged.floor = "RDC+1"
+        elif floors:
+            merged.floor = floors[0]
+        else:
+            merged.floor = "RDC+1"
+
+        # ── Fusion des pièces (permissive par niveaux) ────────
+        merged.rooms = self._merge_rooms_multifloor(base.rooms, other.rooms)
+        merged.sources = {r.name_normalized: r.source for r in merged.rooms}
+        merged.composites = {**base.composites, **other.composites}
+
+        # ── Surfaces ─────────────────────────────────────────
+        # Chaque page peut déclarer la surface totale de la maison ou juste son niveau.
+        # On prend le max: si l'un des deux a la bonne valeur totale, on la garde.
+        merged.living_space = max(base.living_space, other.living_space)
+        merged.annex_space = max(base.annex_space, other.annex_space)
+
+        # ── Texte brut ────────────────────────────────────────
+        merged.raw_text = base.raw_text + "\n\n" + other.raw_text
+
+        # ── Typology + type de propriété recalculés ───────────
+        merged.typology = self._detect_typology(merged.rooms)
+        merged.property_type = self._detect_property_type(merged.rooms)
+
+        logger.info(
+            f"  🏠 Fusion multi-niveaux: {len(base.rooms)}+{len(other.rooms)}"
+            f" → {len(merged.rooms)} pièces | "
+            f"surface={merged.living_space} | niveaux={merged.niveaux}"
+        )
+        return merged
+
+    def _merge_rooms_multifloor(self, floor1_rooms, floor2_rooms):
+        """
+        Fusionne les pièces de deux niveaux.
+        Ne déduplique que sur (name_normalized, surface arrondie) — exactement la même pièce.
+        Deux WC de tailles différentes sur deux niveaux sont conservés tous les deux,
+        avec un suffixe numérique si le nom normalisé entre en conflit.
+        """
+        result = []
+        used_names = {}  # name_normalized → count déjà utilisé
+
+        def add_room(r):
+            base = r.name_normalized
+            if base not in used_names:
+                used_names[base] = 1
+                result.append(r)
+            else:
+                # Conflit de nom: suffixer avec le prochain indice
+                used_names[base] += 1
+                idx = used_names[base]
+                import copy
+                r2 = copy.copy(r)
+                r2.name_normalized = f"{base}_{idx}"
+                result.append(r2)
+
+        # Index pour détecter les doublons exacts (même pièce sur une récap commune)
+        exact_seen = set()  # (name_normalized, surface_rounded)
+
+        for r in floor1_rooms:
+            key = (r.name_normalized, round(r.surface, 2))
+            if key in exact_seen:
+                continue
+            exact_seen.add(key)
+            add_room(r)
+
+        for r in floor2_rooms:
+            key = (r.name_normalized, round(r.surface, 2))
+            if key in exact_seen:
+                continue
+            exact_seen.add(key)
+            add_room(r)
+
+        return result
 
     def _rooms_from_table(self, rows, source):
         """Convertit les lignes du tableau spatial en ExtractedRoom"""
