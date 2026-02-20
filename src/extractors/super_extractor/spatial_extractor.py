@@ -28,7 +28,7 @@ class SpatialExtractor:
     # Types de pièces uniques (on ne veut qu'une seule occurrence - la plus grande)
     UNIQUE_ROOM_TYPES = ["SEJOUR", "CUISINE", "SEJOUR/CUISINE", "ENTREE", "RECEPTION", "JARDIN", "CELLIER"]
     # Types qui peuvent avoir plusieurs occurrences numérotées
-    NUMBERED_ROOM_TYPES = ["CHAMBRE", "SDB", "SDE", "WC", "BALCON"]
+    NUMBERED_ROOM_TYPES = ["CHAMBRE", "SDB", "SDE", "WC", "BALCON", "GARAGE", "BUANDERIE", "PLACARD"]
 
     def extract_from_pages(self, pages_data: List[Dict], reference_hint: Optional[str] = None) -> Dict:
         """
@@ -188,7 +188,16 @@ class SpatialExtractor:
             text = line["text"]
             if re.search(r"\d+[\.,]\d+\s*m\s*[²2\xa0]?\s*$", text, re.IGNORECASE):
                 surface_lines.append(line)
-            elif any(kw in text.upper() for kw in ["CHAMBRE", "SEJOUR", "CUISINE", "SDB", "SDE", "WC", "ENTREE", "BALCON", "CELLIER", "SALLE", "JARDIN", "CIRCULATION", "DGT", "DÉGAGEMENT", "COULOIR", "PALIER"]):
+            elif any(kw in text.upper() for kw in [
+                "CHAMBRE", "SEJOUR", "CUISINE", "SDB", "SDE", "WC",
+                "ENTREE", "ENTR\u00c9E",  # avec accent
+                "BALCON", "CELLIER", "SALLE",
+                "JARDIN", "CIRCULATION", "DGT", "D\u00c9GAGEMENT", "COULOIR",
+                "PALIER", "ESCALIER",
+                "GARAGE", "BOX", "PARKING", "STATIONNEMENT",  # ← manquaient
+                "BUANDERIE", "LINGERIE", "PLACARD", "RANGEMENT",
+                "CAVE", "GRENIER", "REMISE", "LOCAL",
+            ]):
                 surface_lines.append(line)
 
         surface_lines.sort(key=lambda l: l["y0"])
@@ -205,26 +214,16 @@ class SpatialExtractor:
             logger.info(f"    '{l['text']}'")
 
         # Phase 2: Pair surfaces without room names with WC rooms nearby
-        # Only pair WC specifically - don't do aggressive "any" pairing
+        # DISABLED - This causes misclassification. Let rooms be extracted without forced WC pairing.
+        # The room name should come from the PDF text, not from automatic pairing.
         extra_rooms = []
-        lines_by_y = {}
-        for line in merged_lines:
-            text = line["text"].strip()
-            if re.search(r"\d+[\.,]\d+\s*m", text, re.IGNORECASE):
-                has_room = any(kw in text.upper() for kw in ["CHAMBRE", "SEJOUR", "CUISINE", "SDB", "SDE", "WC", "ENTREE", "BALCON", "CELLIER", "SALLE", "JARDIN", "CIRCULATION", "DGT"])
-                if not has_room:
-                    y_pos = line["y0"]
-                    # Only pair with WC specifically
-                    nearby_room = self._find_nearby_room(target_lines, y_pos, 30, only_wc=True)
-                    if nearby_room:
-                        combined_text = f"{nearby_room['text']} {text}"
-                        extra_rooms.append({"text": combined_text, "y0": min(y_pos, nearby_room["y0"]), "source": "paired"})
-                        logger.info(f"    🔗 PAIRED (WC): '{nearby_room['text']}' + '{text}'")
+        # Original pairing code disabled:
+        # for line in merged_lines:
+        #     ... pairing logic ...
 
-        # Ajouter les rooms appariées aux merged_lines
-        if extra_rooms:
-            merged_lines.extend(extra_rooms)
-            logger.info(f"  ➕ Après appariement: {len(merged_lines)} lignes")
+        # Ajouter les rooms appariées aux merged_lines (désactivé)
+        # if extra_rooms:
+        #     merged_lines.extend(extra_rooms)
 
         for line in merged_lines:
             text = line["text"].strip()

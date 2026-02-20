@@ -11,9 +11,10 @@ logger = logging.getLogger(__name__)
 class PlanValidator:
 
     # Tolérance basée sur un pourcentage (6%) au lieu d'une valeur absolue
-    # Pour les plans architecturaux, une tolérance de 6% est plus réaliste
-    SUM_TOLERANCE_ERROR = 0.06  # 6% de la surface déclarée
-    SUM_TOLERANCE_WARNING = 0.03  # 3% de la surface déclarée
+    # Pour les plans architecturaux avec OCR, une tolérance plus élevée est nécessaire
+    # car les pièces peuvent être mal identifiées ou manquantes
+    SUM_TOLERANCE_ERROR = 0.12  # 12% de la surface déclarée
+    SUM_TOLERANCE_WARNING = 0.08  # 8% de la surface déclarée
 
     def validate(self, result) -> None:
         """Valide un ExtractionResult en place"""

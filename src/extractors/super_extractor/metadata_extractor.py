@@ -27,12 +27,21 @@ class MetadataExtractor:
                  "DATE", "TYPE", "PLAN", "NOTA", "IND"}
 
     FLOOR_PATTERNS = [
+        # Combinaison RDC + ETAGE (indique une maison avec plusieurs niveaux)
+        (r"REZ\s*DE\s*CHAUSSEE\s*(ETAGE|\+|/)\s*ETAGE", "RDC+1"),
+        (r"RDC\s*(ETAGE|\+|/)\s*ETAGE", "RDC+1"),
+        (r"REZ[- ]?DE[- ]?CHAUSSEE\s+ETAGE", "RDC+1"),
+        # Niveau unique RDC
         (r"NIVEAU\s*[:\s]*(Rez[- ]?de[- ]?chauss[éeè]e)", "RDC"),
         (r"\bRDC\b", "RDC"),
-        (r"[Rr]ez[- ]?de[- ]?chauss[éeè]e", "RDC"),
+        (r"[Rr]ez[- ]?de[- ]?chauss[éeè]e\s+(?!ETAGE|ETG)", "RDC"),  # RDC seul, pas suivi de ETAGE
+        # Patterns pour étage
+        (r"NIVEAU\s*[:\s]*(1er\s*[ée]tage|Premier\s*[ée]tage|1re\s*[ée]tage)", "R+1"),
+        (r"\bR\+1\b", "R+1"),
+        (r"(1er\s*[ée]tage|Premier\s*[ée]tage|1re\s*[ée]tage)", "R+1"),
+        (r"(\d+)\s*(?:er|e|[èe]me)\s*[ée]tage", lambda m: f"R+{m.group(1)}"),
         (r"NIVEAU\s*[:\s]*R\+(\d+)", lambda m: f"R+{m.group(1)}"),
         (r"\bR\+(\d+)\b", lambda m: f"R+{m.group(1)}"),
-        (r"(\d+)\s*(?:er|e|[èe]me)\s*[ée]tage", lambda m: f"R+{m.group(1)}"),
     ]
 
     BUILDING_PATTERNS = [
@@ -64,6 +73,32 @@ class MetadataExtractor:
         r"SURFACE\s*ANNEXE\s*[:\s]*(\d+[\.,]\d+)",
         r"TOTAL\s*EXT[ÉE]RIEURS?\s*[:\s]*(\d+[\.,]\d+)",
     ]
+    
+    # Nouvelles patterns pour surface propriété et espaces verts
+    PROPERTY_SPACE_PATTERNS = [
+        # Patterns simples (sans accents pour éviter les problèmes d'encodage)
+        r"TOTAL\s+PROPRIETE\s+(\d+[\.,]\d+)",
+        r"TOTAL\s+PROPRIETE\s+(\d+[\.,]\d+)\s*m",
+        r"TOTAL\s*PROPRI[ÉE]T[ÉÈ]\s*[:\s]*(\d+[\.,]\d+)\s*m",
+        r"TOTAL\s*PROPRI[ÉE]T[ÉÈ]\s*[:\s]*(\d+[\.,]\d+)",
+        r"SURFACE\s*PROPRI[ÉE]T[ÉÈ]\s*[:\s]*(\d+[\.,]\d+)",
+        r"SURFACE\s*DU\s*LOT\s*[:\s]*(\d+[\.,]\d+)",
+        r"SURFACE\s*TERRAIN\s*[:\s]*(\d+[\.,]\d+)",
+        r"SUPERFICIE\s*[:\s]*(\d+[\.,]\d+)",
+    ]
+    
+    # Patterns pour gérer les newlines (texte sur plusieurs lignes)
+    PROPERTY_SPACE_PATTERNS_MULTILINE = [
+        r"TOTAL\s+PROPRIETE\s*\n?\s*(\d+[\.,]\d+)\s*m",
+        r"TOTAL\s+PROPRIETE\s*\n?\s*(\d+[\.,]\d+)",
+    ]
+    
+    GARDEN_SPACE_PATTERNS = [
+        r"SURFACE\s*ESPACES\s*VERTS\s*[:\s]*(\d+[\.,]\d+)",
+        r"SURFACE\s*JARDIN\s*[:\s]*(\d+[\.,]\d+)",
+        r"JARDIN\s*PRIVATIF\s*[:\s]*(\d+[\.,]\d+)",
+        r"ESPACES\s*VERTS\s*[:\s]*(\d+[\.,]\d+)",
+    ]
  
 
     def extract(self, text: str, reference_hint: Optional[str] = None,
@@ -73,6 +108,9 @@ class MetadataExtractor:
         if spatial_metadata:
             full_text += " " + " ".join(spatial_metadata)
 
+        # Combiner les patterns normaux et multilignes pour surface_propriete
+        property_patterns = self.PROPERTY_SPACE_PATTERNS + self.PROPERTY_SPACE_PATTERNS_MULTILINE
+        
         return {
             "reference": self._extract_first(full_text, self.REF_PATTERNS,
                                               reference_hint or "UNKNOWN"),
@@ -83,6 +121,8 @@ class MetadataExtractor:
             "annex_space": self._extract_surface(full_text, self.ANNEX_SPACE_PATTERNS),
             "address": self._extract_address(full_text),
             "typology_hint": self._extract_typology_hint(full_text),
+            "surface_propriete": self._extract_surface(full_text, property_patterns),
+            "surface_espaces_verts": self._extract_surface(full_text, self.GARDEN_SPACE_PATTERNS),
         }
 
     def _extract_first(self, text, patterns, default):

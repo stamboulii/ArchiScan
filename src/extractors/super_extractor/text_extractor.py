@@ -16,7 +16,7 @@ class TextExtractor:
         self.use_ocr = use_ocr
         self.tesseract_path = tesseract_path
 
-    def extract(self, pdf_path: str, page_num: Optional[int] = None) -> dict:
+    def extract(self, pdf_path: str, page_num: Optional[int] = None, force_ocr: bool = False) -> dict:
         """
         Returns dict:
             text_pymupdf, text_ocr, primary_source, pages_data, ocr_pages_data
@@ -28,10 +28,11 @@ class TextExtractor:
         path = Path(pdf_path)
         result = {
             "text_pymupdf": "",
+            "raw_pymupdf": "",      # texte brut AVANT nettoyage (lignes préservées)
             "text_ocr": "",
             "primary_source": "pymupdf",
             "pages_data": [],
-            "ocr_pages_data": [],  # Nouvelles donnees OCR structurees
+            "ocr_pages_data": [],
         }
 
         if not path.exists():
@@ -39,16 +40,17 @@ class TextExtractor:
             return result
 
         # Etape 1: PyMuPDF
-        text_pymupdf, pages_data = self._extract_pymupdf(path, page_num=page_num)
-        result["text_pymupdf"] = text_pymupdf
+        raw_text, pages_data = self._extract_pymupdf(path, page_num=page_num)
+        result["raw_pymupdf"] = raw_text                     # brut, lignes préservées
+        result["text_pymupdf"] = self._clean_text(raw_text)  # nettoyé pour regex
         result["pages_data"] = pages_data
 
-        # Etape 2: OCR si peu de texte
-        has_enough = len(text_pymupdf.strip()) > 50
-        surface_count = len(re.findall(r"\d+[\.,]\d+\s*m[²2]", text_pymupdf))
+        # Etape 2: OCR si peu de texte OU forcé (e.g. maison multi-page)
+        has_enough = len(result["text_pymupdf"].strip()) > 50
+        surface_count = len(re.findall(r"\d+[\.,]\d+\s*m[²2]", result["text_pymupdf"]))
 
-        if self.use_ocr and (not has_enough or surface_count < 3):
-            logger.info("OCR active (texte PyMuPDF insuffisant)")
+        if self.use_ocr and (force_ocr or not has_enough or surface_count < 3):
+            logger.info("OCR activé%s", " (forcé)" if force_ocr else " (texte PyMuPDF insuffisant)")
             # Extraire l'OCR avec donnees structurelles pour spatial
             text_ocr, ocr_pages_data = self._extract_ocr_with_data(path, page_num=page_num)
             result["text_ocr"] = text_ocr
@@ -91,7 +93,7 @@ class TextExtractor:
                 })
 
             doc.close()
-            return self._clean_text(full_text), pages_data
+            return full_text, pages_data  # raw, non nettoyé
         except ImportError:
             logger.error("PyMuPDF non installe: pip install pymupdf")
             return "", []

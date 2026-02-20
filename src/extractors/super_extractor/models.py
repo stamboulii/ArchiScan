@@ -75,6 +75,8 @@ class ExtractedRoom:
 @dataclass
 class ExtractionResult:
     reference: str = ""
+    parcel_label: str = ""  # Label du lot (ex: "M011")
+    page_number: int = 0  # Numéro de page d'où vient l'extraction
     property_type: str = "appartment"
     typology: str = ""
     floor: str = ""
@@ -83,6 +85,10 @@ class ExtractionResult:
     address: str = ""
     living_space: float = 0.0
     annex_space: float = 0.0
+    # Nouveaux champs pour maisons
+    surface_propriete: float = 0.0
+    surface_espaces_verts: float = 0.0
+    niveaux: List[str] = field(default_factory=list)
     rooms: List[ExtractedRoom] = field(default_factory=list)
     composites: Dict[str, List[str]] = field(default_factory=dict)
     validation_errors: List[str] = field(default_factory=list)
@@ -114,6 +120,30 @@ class ExtractionResult:
         
         surface_detail = {r.name_normalized: r.surface for r in self.rooms}
         
+        # Determiner les options
+        has_garden  = (
+            any(r.room_type == RoomType.GARDEN for r in self.rooms)
+            or self.surface_espaces_verts > 0  # fallback: détecté dans les métadonnées
+        )
+        has_balcony = any(r.room_type == RoomType.BALCONY for r in self.rooms)
+        has_terrace = any(r.room_type == RoomType.TERRACE for r in self.rooms)
+        has_loggia  = any(r.room_type == RoomType.LOGGIA  for r in self.rooms)
+        # Parking pur: type PARKING dont le nom normalisé NE contient PAS 'garage'
+        has_parking = any(
+            r.room_type == RoomType.PARKING and "garage" not in r.name_normalized.lower()
+            for r in self.rooms
+        )
+        # Garage: type PARKING dont le nom normalisé contient 'garage' (ou 'box')
+        # OU cave/cellar (il arrive que le garage soit classé en cave pour les maisons)
+        has_garage = (
+            any(
+                r.room_type == RoomType.PARKING
+                and ("garage" in r.name_normalized.lower() or "box" in r.name_normalized.lower())
+                for r in self.rooms
+            )
+            or any(r.room_type == RoomType.CELLAR for r in self.rooms)
+        )
+        
         result = {
             self.reference: {
                 "parcelTypeId": self.property_type,
@@ -123,22 +153,23 @@ class ExtractionResult:
                 "building": self.building,
                 "orientation": "",
                 "price": "N.C",
-                "living_space": str(self.living_space),
+                "living_space": str(self.living_space) if self.living_space else str(self.interior_surface_calc),
                 "annex_space": str(self.annex_space),
                 "surfaceDetail": surface_detail,
                 "surfaceComposites": self.composites,
                 "surfaceTotals": {
-                    "habitable": self.living_space,
+                    "habitable": self.living_space if self.living_space else self.interior_surface_calc,
                     "habitable_calc": self.interior_surface_calc,
                     "annexe": self.annex_space,
                     "annexe_calc": self.annex_surface_calc,
                 },
                 "option": {
-                    "balcony": any(r.room_type == RoomType.BALCONY for r in self.rooms),
-                    "terrace": any(r.room_type == RoomType.TERRACE for r in self.rooms),
-                    "garden": any(r.room_type == RoomType.GARDEN for r in self.rooms),
-                    "loggia": any(r.room_type == RoomType.LOGGIA for r in self.rooms),
-                    "parking": any(r.room_type == RoomType.PARKING for r in self.rooms),
+                    "balcony": has_balcony,
+                    "terrace": has_terrace,
+                    "garden": has_garden,
+                    "loggia": has_loggia,
+                    "parking": has_parking,
+                    "garage": has_garage,
                 },
                 "tva": "",
                 "pinel": "",
@@ -149,7 +180,13 @@ class ExtractionResult:
                     "promoter": self.promoter_detected,
                     "address": self.address,
                     "program": self.program_name,
+                    # Nouveaux champs pour maisons
+                    "surface_propriete_totale": self.surface_propriete,
+                    "surface_espaces_verts": self.surface_espaces_verts,
+                    "niveaux": self.niveaux if self.niveaux else self._floor_to_niveaux(self.floor),
                 },
+                "pageNumber": self.page_number,
+                "parcelLabel": self.parcel_label or self.reference,
                 "_validation": {
                     "is_valid": len(self.validation_errors) == 0,
                     "errors": self.validation_errors,
@@ -166,6 +203,24 @@ class ExtractionResult:
             result[self.reference]['_raw_text'] = self.raw_text
         
         return result
+    
+    def _floor_to_niveaux(self, floor: str) -> List[str]:
+        """Convertit le floor string en liste de niveaux."""
+        if not floor:
+            return []
+        floor_upper = floor.upper()
+        niveaux = []
+        if "RDC" in floor_upper or floor == "RDC":
+            niveaux.append("Rez-de-chaussée")
+        # Chercher les etages (R+1, R+2, etc.)
+        import re
+        for match in re.finditer(r"R\+(\d+)", floor_upper):
+            niveau = int(match.group(1))
+            if niveau == 1:
+                niveaux.append("Étage")
+            else:
+                niveaux.append(f"{niveau}e étage")
+        return niveaux
 
     def _property_label(self) -> str:
         return {"appartment": "Appartement", "house": "Maison",

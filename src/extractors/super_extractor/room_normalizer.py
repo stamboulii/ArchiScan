@@ -67,8 +67,12 @@ class RoomNormalizer:
             "entree", RoomType.ENTRY, False),
             
             # === PLACARD (ajoute) ===
-            (r"^(PL|PLACARD|RANGEMENT|DRESSING|ARMOIRE)$",
-            "placard", RoomType.STORAGE, False),
+            # Note: pattern must NOT match "Pl (sous escalier)" - more specific patterns first
+            (r"^PLACARD$", "placard", RoomType.STORAGE, False),
+            (r"^(RANGEMENT|DRESSING|ARMOIRE)$", "placard", RoomType.STORAGE, False),
+            # Handle "Pl (sous escalier)" -> "placard_escalier"
+            (r"^PL\s*\(.*?ESCALIER.*?\)$",
+            "placard_escalier", RoomType.STORAGE, True),
             
             # === RANGEMENT (ajoute) ===
             (r"^(RANGEMENT|STOCKAGE|DEBARRAS)$",
@@ -79,7 +83,7 @@ class RoomNormalizer:
             "rangement_{n}", RoomType.STORAGE, False),
             
             # === PI/Pl (placard abrege OCR) ===
-            (r"^(PI|PLC)$",
+            (r"^(PI|PLC|PL)$",
             "placard", RoomType.STORAGE, False),
 
             # ══════════════════════════════════════════
@@ -92,8 +96,11 @@ class RoomNormalizer:
             # ══════════════════════════════════════════
             # CIRCULATION / DÉGAGEMENT
             # ══════════════════════════════════════════
-            (r"^(DGT|D\.G\.T\.?|D[ÉE]GAGEMENT|COULOIR|PALIER|CIRCULATION|"
-            r"DIST\.?|DISTRIBUTION|PASSAGE|COURSIVE)$",
+            # PALIER -> palier (not circulation)
+            (r"^(PALIER)$",
+            "palier", RoomType.CIRCULATION, False),
+            (r"^(DGT|D\.G\.T\.?|D[\u00c9E]GAGEMENT|COULOIR|CIRCULATION|"
+            r"DIST\.?|DISTRIBUTION|PASSAGE|COURSIVE|ESCALIER)$",
             "circulation", RoomType.CIRCULATION, False),
 
             # ══════════════════════════════════════════
@@ -104,7 +111,7 @@ class RoomNormalizer:
             (r"^CH\.?\s*(\d+)$", "chambre_{n}", RoomType.BEDROOM, False),
             (r"^SUITE\s*PARENTALE\s*(\d*)$", "chambre_{n}", RoomType.BEDROOM, False),
             (r"^(BUREAU|OFFICE|CABINET)\s*(\d*)$", "chambre_{n}", RoomType.BEDROOM, False),
-            (r"^CHAMBRE\s*D['\u2019]?\s*(AMIS?|ENFANTS?)\s*(\d*)$",
+            (r"^CHAMBRE\s*D['\u2019']?\s*(AMIS?|ENFANTS?)\s*(\d*)$",
             "chambre_{n}", RoomType.BEDROOM, False),
             (r"^CH\s*(\d+)$", "chambre_{n}", RoomType.BEDROOM, False),
             (r"^CHAMBRE\s*PARENTALE$", "chambre_1", RoomType.BEDROOM, False),
@@ -113,9 +120,9 @@ class RoomNormalizer:
             # ══════════════════════════════════════════
             # SALLE DE BAIN
             # ══════════════════════════════════════════
-            (r"^(SALLE\s*DE\s*BAINS?|SDB|S\.?\s*D\.?\s*B\.?|BAIN)\s*(\d+)$",
+            (r"^(SALLE\s*DE\s*BAINS?|SDB|S\.?\s*D\.?\s*B\.?|BAIN|BAINS)\s*(\d+)$",
             "salle_de_bain_{n}", RoomType.BATHROOM, False),
-            (r"^(SALLE\s*DE\s*BAINS?|SDB|S\.?\s*D\.?\s*B\.?|BAIN)$",
+            (r"^(SALLE\s*DE\s*BAINS?|SDB|S\.?\s*D\.?\s*B\.?|BAIN|BAINS)$",
             "salle_de_bain", RoomType.BATHROOM, False),
             (r"^(SALLE\s*DE\s*BAINS?\s*PARENTALE)$",
             "salle_de_bain_1", RoomType.BATHROOM, False),
@@ -123,9 +130,9 @@ class RoomNormalizer:
             # ══════════════════════════════════════════
             # SALLE D'EAU
             # ══════════════════════════════════════════
-            (r"^(SALLE\s*D['\u2019]?\s*EAU|SDE|S\.?\s*D\.?\s*E\.?|EAU)\s*(\d+)$",
+            (r"^(SALLE\s*D['\u2019']?\s*EAU|SDE|S\.?\s*D\.?\s*E\.?|EAU)\s*(\d+)$",
             "salle_d_eau_{n}", RoomType.SHOWER_ROOM, False),
-            (r"^(SALLE\s*D['\u2019]?\s*EAU|SDE|S\.?\s*D\.?\s*E\.?|EAU)$",
+            (r"^(SALLE\s*D['\u2019']?\s*EAU|SDE|S\.?\s*D\.?\s*E\.?|EAU)$",
             "salle_d_eau", RoomType.SHOWER_ROOM, False),
 
             # ══════════════════════════════════════════
@@ -144,7 +151,8 @@ class RoomNormalizer:
             (r"^(DRESSING)\s*(\d*)$", "dressing", RoomType.DRESSING, False),
             (r"^(PLACARD|CELLIER|BUANDERIE|LINGERIE|RANGEMENT|RGT|"
             r"LOCAL\s*TECHNIQUE|LOCAL\s*POUSSETTE|CELLIER\s*/\s*BUANDERIE|"
-            r"GRENIER|REMISE|D[ÉE]BARRAS|CAVE\s*INT[ÉE]RIEURE)$",
+            r"GRENIER|REMISE|D[\u00c9E]BARRAS|CAVE\s*INT[\u00c9E]RIEURE|"
+            r"LOCAL|STOCKAGE)$",
             "storage", RoomType.STORAGE, False),
 
             # ══════════════════════════════════════════
@@ -173,7 +181,8 @@ class RoomNormalizer:
             # ══════════════════════════════════════════
             # EXTÉRIEUR - JARDIN
             # ══════════════════════════════════════════
-            (r"^(JARDIN|JARDINET|JARDIN\s*PRIVATIF)\s*(\d*)$",
+            # Handle "MI011 Espaces verts" - filter out reference prefix
+            (r"^(ESPACES\s*VERTS|JARDIN|JARDINET|JARDIN\s*PRIVATIF)\s*(\d*)$",
             "jardin", RoomType.GARDEN, True),
 
             # ══════════════════════════════════════════
@@ -188,9 +197,16 @@ class RoomNormalizer:
             "patio", RoomType.PATIO, True),
 
             # ══════════════════════════════════════════
-            # PARKING / GARAGE
+            # PARKING / GARAGE (distingués par le nom normalisé)
             # ══════════════════════════════════════════
-            (r"^(PARKING|GARAGE|BOX|STATIONNEMENT|PLACE\s*DE\s*PARKING)\s*(\d*)$",
+            # Garage / box fermé → nom 'garage' (permet détection has_garage)
+            (r"^(GARAGE|BOX)\s*(\d*)$",
+            "garage", RoomType.PARKING, True),
+            # Garage avec parenthèses (format OCR)
+            (r"^\(?GARAGE\)?$",
+            "garage", RoomType.PARKING, True),
+            # Parking / stationnement ouvert → nom 'parking'
+            (r"^(PARKING|STATIONNEMENT|PLACE\s*DE\s*PARKING)\s*(\d*)$",
             "parking", RoomType.PARKING, True),
 
             # ══════════════════════════════════════════
@@ -217,7 +233,21 @@ class RoomNormalizer:
         Returns: (name_normalized, room_type, room_number, is_exterior, confidence)
         Returns (None, None, None, False, 0.0) si non reconnu
         """
-        name_clean = re.sub(r"\s+", " ", name_raw.strip().upper())
+        # Nettoyer le nom: supprimer parenthèses, accents, etc.
+        name_clean = name_raw.strip().upper()
+        
+        # Supprimer les références comme "MI011" en début de chaîne
+        # Patterns: M011, MI011, LOT_001, A008, etc.
+        name_clean = re.sub(r"^(MI\d+|M\d+|LOT_?\d+|[A-Z]\d{2,})\s+", "", name_clean)
+        
+        # Supprimer les parenthèses mais garder le contenu (format OCR: "(Garage)" -> "Garage")
+        name_clean = re.sub(r"\(?(.+?)\)?", r"\1", name_clean).strip()
+        
+        # Supprimer les préfixes comme "m2" (format OCR corrompu: "m2 Entrée")
+        name_clean = re.sub(r"^M2\s+", "", name_clean).strip()
+        
+        # Normaliser les espaces
+        name_clean = re.sub(r"\s+", " ", name_clean)
 
         for pattern, name_template, room_type, is_exterior in self.ROOM_ALIASES:
             match = re.match(pattern, name_clean, re.IGNORECASE)
