@@ -1,3 +1,0 @@
-Total: 127
-Validees: 10
-Max ID: 127

@@ -93,7 +93,12 @@ class SuperExtractor:
         return self._extract_single_page(pdf_path, reference_hint)
     
     def _extract_multipage(self, pdf_path: str, reference_hint: str = None) -> ExtractionResult:
-        """Extrait les donnees de plusieurs pages PDF - retourne le premier plan trouve."""
+        """Extrait les donnees de plusieurs pages PDF.
+        
+        extract_all_pages() gère maintenant le groupage et la combinaison
+        des pages partageant la même référence. On retourne juste le premier
+        (ou celui qui correspond au hint).
+        """
         all_results = self.extract_all_pages(pdf_path, reference_hint)
         
         if not all_results:
@@ -101,9 +106,122 @@ class SuperExtractor:
             result.validation_errors.append("Aucun plan detecte dans les pages")
             return result
         
-        # Retourner le premier resultat
+        # Si un hint est fourni, chercher la référence correspondante
+        if reference_hint and reference_hint in all_results:
+            return all_results[reference_hint]
+        
+        # Sinon retourner le premier résultat combiné
         first_ref = list(all_results.keys())[0]
         return all_results[first_ref]
+    
+    def _combine_multi_floor_results(self, results: List['ExtractionResult']) -> 'ExtractionResult':
+        """Combine les résultats de plusieurs pages (RDC + étage) en un seul."""
+        if not results:
+            return ExtractionResult()
+        
+        # Si on a plusieurs pages pour même référence, c'est probablement une maison multi-niveaux
+        is_multi_page = len(results) > 1
+        
+        # Prendre le premier comme base
+        combined = results[0]
+        
+        # Collecter toutes les pièces de toutes les pages
+        all_rooms = list(combined.rooms)
+        all_floors = [combined.floor] if combined.floor else []
+        
+        # ── CORRECTION SURFACE: prendre le MAX déclaré, pas additionner ─────
+        # La surface habitable déclarée sur chaque page peut être le total
+        # ou celle d'un seul niveau. On prend la valeur MAX.
+        declared_living_spaces = [r.living_space for r in results if r.living_space > 0]
+        declared_annex_spaces  = [r.annex_space  for r in results if r.annex_space  > 0]
+        
+        # Propriétés: garder la valeur non-nulle trouvée (pas additionner)
+        max_propriete     = max((r.surface_propriete     for r in results), default=0)
+        max_espaces_verts = max((r.surface_espaces_verts for r in results), default=0)
+        
+        # Mettre à jour les propriétés
+        combined.surface_propriete = max_propriete
+        combined.surface_espaces_verts = max_espaces_verts
+        
+        # Page number: utiliser celle avec le plus de pièces (ou la dernière page)
+        max_rooms_page = max(results, key=lambda r: len(r.rooms))
+        combined.page_number = max_rooms_page.page_number
+        
+        for result in results[1:]:
+            # Ajouter les pièces (les doublons seront dédoublonnés plus bas)
+            all_rooms.extend(result.rooms)
+            
+            # Collecter les niveaux détectés
+            if result.floor:
+                all_floors.append(result.floor)
+        
+        # Dédoublonner les pièces fusionnées (même type+numéro+surface)
+        all_rooms = self._final_dedup(all_rooms)
+        
+        # Remove false duplicates: if 'placard' has same surface as 'salle_de_bain', keep only salle_de_bain
+        all_rooms = self._remove_false_duplicates(all_rooms)
+        
+        # Déterminer le floor combiné
+        floor_set = set(f for f in all_floors if f)  # ignorer les vides
+        
+        if is_multi_page and len(floor_set) <= 1 and (not floor_set or "RDC" in floor_set):
+            # Plusieurs pages, même niveau (ou aucun détecté) → maison RDC+1
+            combined.floor = "RDC+1"
+        elif "RDC" in floor_set and "R+1" in floor_set:
+            combined.floor = "RDC+1"
+        elif "RDC" in floor_set and any(f.startswith("R+") for f in floor_set):
+            other_floors = [f for f in floor_set if f != "RDC" and f.startswith("R+")]
+            if other_floors:
+                combined.floor = f"RDC+{other_floors[0].replace('R+', '')}"
+        elif len(floor_set) > 1:
+            combined.floor = "+".join(sorted(floor_set))
+        elif floor_set:
+            combined.floor = list(floor_set)[0]
+        
+        # Mettre à jour les pièces et surfaces
+        combined.rooms = all_rooms
+        combined.sources = {r.name_normalized: r.source for r in all_rooms}
+        
+        # Surface habitable: utiliser le MAX déclaré; si aucun, calculer
+        if declared_living_spaces:
+            combined.living_space = max(declared_living_spaces)
+        else:
+            combined.living_space = sum(
+                r.surface for r in all_rooms if not r.is_exterior
+            )
+        
+        combined.annex_space       = max(declared_annex_spaces, default=0)
+        combined.surface_propriete  = max_propriete
+        combined.surface_espaces_verts = max_espaces_verts
+        
+        # Niveaux lisibles pour customData
+        niveaux = []
+        if "RDC" in combined.floor.upper():
+            niveaux.append("Rez-de-chaussée")
+        if "+1" in combined.floor or "R+1" in combined.floor.upper():
+            niveaux.append("Étage")
+        combined.niveaux = niveaux if niveaux else combined._floor_to_niveaux(combined.floor)
+        
+        # Re-détecter le type de propriété après combinaison
+        combined.property_type = self._detect_property_type(combined.rooms, combined.floor)
+        
+        # ── Re-détecter la typologie sur l'ensemble des pièces combinées ──────
+        # Important: la page RDC seule peut ne pas avoir de chambre → T1 erroné
+        combined.typology = self._detect_typology(combined.rooms)
+        
+        # ── Effacer les erreurs stales (venant de pages individuelles) ─────────
+        # et re-valider sur le résultat combiné complet
+        combined.validation_errors = []
+        combined.validation_warnings = []
+        self.validator.validate(combined)
+        
+        logger.info(
+            f"  🔗 Combiné {len(results)} pages: floor={combined.floor}, "
+            f"typology={combined.typology}, rooms={len(combined.rooms)}, "
+            f"living={combined.living_space}"
+        )
+        
+        return combined
     
     def extract_all_pages(self, pdf_path: str, reference_hint: str = None) -> Dict[str, 'ExtractionResult']:
         """Extrait les donnees de toutes les pages d'un PDF multi-pages.
@@ -117,7 +235,9 @@ class SuperExtractor:
         page_count = len(doc)
         doc.close()
         
-        all_results = {}
+        # ── CHANGEMENT CLÉ: grouper les pages par référence ──────────────────
+        # Dict[reference, List[ExtractionResult]] - plusieurs pages pour même lot
+        pages_by_ref: Dict[str, List] = {}
         plans_found = 0
         
         for page_num in range(page_count):
@@ -129,19 +249,42 @@ class SuperExtractor:
                 plans_found += 1
                 
                 # Extraire les donnees de cette page
-                result = self._extract_single_page(pdf_path, reference_hint, page_num)
+                # is_multipage_context=True désactive _filter_by_reference prématuré
+                result = self._extract_single_page(
+                    pdf_path, reference_hint, page_num, is_multipage_context=True
+                )
                 
-                # Ajouter au resultat global
-                if result.reference and result.reference != "UNKNOWN":
-                    all_results[result.reference] = result
-                elif result.reference == "UNKNOWN":
-                    # Utiliser un nom unique pour les plans sans reference
-                    key = f"PAGE_{page_num + 1}"
-                    all_results[key] = result
+                # Grouper par référence (même lot → même liste)
+                key = result.reference if (result.reference and result.reference != "UNKNOWN") \
+                      else f"PAGE_{page_num + 1}"
+                
+                if key not in pages_by_ref:
+                    pages_by_ref[key] = []
+                pages_by_ref[key].append(result)
+                logger.info(f"    📎 Ref '{key}': {len(pages_by_ref[key])} page(s) groupée(s)")
             else:
                 logger.info(f"    ⏭️ Page {page_num + 1}: pas un plan")
         
         logger.info(f"  📊 Total: {plans_found} plan(s) trouve(s) sur {page_count} pages")
+        
+        # Combiner les pages groupées pour obtenir un résultat par référence
+        all_results = {}
+        for ref, page_results in pages_by_ref.items():
+            if len(page_results) == 1:
+                # Une seule page: appliquer le filtre de référence maintenant
+                single = page_results[0]
+                if single.living_space > 0:
+                    single.rooms = self._filter_by_reference(
+                        single.rooms, single.reference, single.living_space
+                    )
+                    single.sources = {r.name_normalized: r.source for r in single.rooms}
+                all_results[ref] = single
+            else:
+                # Plusieurs pages pour même référence: combiner (RDC + Étage)
+                logger.info(f"  🔗 Ref '{ref}': combinaison de {len(page_results)} pages")
+                combined = self._combine_multi_floor_results(page_results)
+                all_results[ref] = combined
+        
         return all_results
     
     def _is_plan_page(self, pdf_path: str, page_num: int) -> bool:
@@ -217,11 +360,12 @@ class SuperExtractor:
             logger.warning(f"Erreur OCR page {page_num}: {e}")
             return ""
     
-    def _extract_single_page(self, pdf_path: str, reference_hint: str = None, page_num: int = None) -> ExtractionResult:
+    def _extract_single_page(self, pdf_path: str, reference_hint: str = None, page_num: int = None, is_multipage_context: bool = False) -> ExtractionResult:
         """Extrait les donnees d'une seule page."""
         page_info = f" (page {page_num + 1})" if page_num is not None else ""
         logger.info(f"🔍 SuperExtractor v3: {pdf_path}{page_info}")
         result = ExtractionResult()
+        result.page_number = page_num + 1 if page_num is not None else 1
         path = Path(pdf_path)
 
         if not path.exists():
@@ -275,6 +419,7 @@ class SuperExtractor:
         #     rooms = self._merge_rooms(rooms, rooms_ocr)
         #     logger.info(f"  🔍 +regex OCR → {len(rooms)} pièces")
         # ── ÉTAPE 3: Construction des pièces ──────────────────
+        rooms = []
 
         # Priorité 1: tableau spatial (le plus fiable)
         if spatial_rows:
@@ -282,14 +427,18 @@ class SuperExtractor:
             rooms = self._rooms_from_table(spatial_rows, "spatial")
             logger.info(f"  ✅ {len(rooms)} pièces depuis tableau spatial")
 
-        # Priorité 2: regex sur texte PyMuPDF (si spatial insuffisant)
-        # Check if spatial extraction found enough rooms
+        # Priorité 1b: texte multi-lignes PyMuPDF (format NOM\nSurface\nNOM\nSurface)
+        # Ce format est fréquent dans les plans de maisons (tableau récap sur 2 colonnes)
+        raw_pymupdf = text_data.get("raw_pymupdf", text_data["text_pymupdf"])
+        if raw_pymupdf:
+            self.normalizer.reset()
+            rooms_ml = self._rooms_from_multiline_text(raw_pymupdf, "pymupdf_ml")
+            rooms = self._merge_rooms(rooms, rooms_ml)
+            logger.info(f"  📋 +multi-ligne PyMuPDF → {len(rooms)} pièces")
+
+        # Priorité 2: regex sur texte PyMuPDF (si spatial+multiline insuffisant)
         spatial_calc = sum(r.surface for r in rooms)
-        # Trigger regex if:
-        # - Less than 10 rooms from spatial, OR
-        # - Surface is less than typical (e.g., < 110m² for a typical apartment)
-        # This helps find missing rooms like WC, SDB, CHAMBRE 1 that don't have labels
-        needs_regex = len(rooms) < 10 or spatial_calc < 110
+        needs_regex = len(rooms) < 10 or spatial_calc < 100
         
         if needs_regex and text_data["text_pymupdf"]:
             self.normalizer.reset()
@@ -327,11 +476,16 @@ class SuperExtractor:
         )
 
         result.reference = meta.get("reference", reference_hint or "UNKNOWN")
+        result.parcel_label = meta.get("reference", reference_hint or "")
         result.floor = meta.get("floor", "")
         result.building = meta.get("building", "")
         result.promoter_detected = meta.get("promoter", "")
         result.address = meta.get("address", "")
-
+        
+        # Nouveaux champs pour maisons
+        result.surface_propriete = meta.get("surface_propriete", 0.0)
+        result.surface_espaces_verts = meta.get("surface_espaces_verts", 0.0)
+        
         # Surfaces: spatial a priorité sur metadata
         result.living_space = (
             spatial_data.get("living_space")
@@ -341,8 +495,14 @@ class SuperExtractor:
             spatial_data.get("annex_space")
             or meta.get("annex_space", 0.0)
         )
+        
+        # Fallback: si living_space est 0, utiliser la surface calculee
+        if result.living_space == 0:
+            result.living_space = sum(r.surface for r in result.rooms if not r.is_exterior)
         # ── ÉTAPE 5b: Filtrage multi-appartement ─────────────
-        if result.living_space > 0:
+        # Ne pas filtrer si on est dans un contexte multi-page:
+        # le filtre sera appliqué APRÈS combinaison des étages.
+        if result.living_space > 0 and not is_multipage_context:
             result.rooms = self._filter_by_reference(
                 result.rooms, result.reference, result.living_space
             )
@@ -366,7 +526,7 @@ class SuperExtractor:
                 result.typology = room_typology
         else:
             result.typology = room_typology
-        result.property_type = self._detect_property_type(rooms)
+        result.property_type = self._detect_property_type(rooms, result.floor)
 
         # ── ÉTAPE 7: Validation ───────────────────────────────
         self.validator.validate(result)
@@ -490,7 +650,78 @@ class SuperExtractor:
     #             ))
     #     return rooms
     
+    def _rooms_from_multiline_text(self, text, source):
+        """
+        Parse le format 'NomPièce\\nSurface\\nNomPièce\\nSurface' des tableaux PDF.
+
+        Dans M011.pdf (et similaires), le tableau récap extrait par PyMuPDF ressemble à:
+            Bains\n5,92m2\nWc\n1,60m2\nPlacard\n0,83m2\n...
+
+        Ce format n'est pas capturé par _rooms_from_regex (qui travaille sur le texte
+        nettoyé où les \\n sont remplacés par des espaces).
+        """
+        rooms = []
+        seen = {}
+
+        # Découper sur les fins de ligne (garder le \\n original)
+        lines = [l.strip() for l in re.split(r'[\n\r]+', text) if l.strip()]
+
+        SURFACE_RE = re.compile(
+            r'^[\(\[]?U?\s*(\d+[\.,]\d+)\s*m[²2]?\s*[\)\]]?$', re.IGNORECASE
+        )
+        SKIP = {"TOTAL", "SURFACE HABITABLE", "SURFACE ANNEXE",
+                "PLAN", "DATE", "IND", "ECHELLE", "LOT", "N°"}
+
+        i = 0
+        while i < len(lines) - 1:
+            name_candidate = lines[i]
+            surface_candidate = lines[i + 1]
+
+            # Vérifier si la ligne suivante est une surface
+            m_surf = SURFACE_RE.match(surface_candidate)
+            if m_surf:
+                name_raw = name_candidate
+                surface_str = m_surf.group(1).replace(",", ".")
+
+                # Filtrer les noms trop longs, numeriques, ou mots-cles de skip
+                if (len(name_raw) >= 2 and len(name_raw) <= 50
+                        and not re.match(r'^\d+', name_raw)
+                        and not any(kw in name_raw.upper() for kw in SKIP)):
+
+                    try:
+                        surface = float(surface_str)
+                    except ValueError:
+                        i += 1
+                        continue
+
+                    if 0.5 <= surface <= 500:
+                        name_clean = self._clean_room_name(name_raw)
+                        if len(name_clean) >= 2:
+                            norm, rtype, num, ext, conf = self.normalizer.normalize(name_clean)
+                            if rtype:
+                                dedup_key = (rtype, round(surface, 2))
+                                if dedup_key not in seen:
+                                    seen[dedup_key] = name_raw
+                                    rooms.append(ExtractedRoom(
+                                        name_raw=name_raw,
+                                        name_normalized=norm,
+                                        surface=surface,
+                                        room_type=rtype,
+                                        is_exterior=ext,
+                                        room_number=num,
+                                        source=source,
+                                        confidence=conf * 0.90,
+                                    ))
+                                    logger.debug(f"  📋 Multi-ligne: '{name_raw}' → {norm} ({surface}m²)")
+                i += 2  # Avancer de 2 (nom + surface consommés)
+            else:
+                i += 1  # Pas de surface après ce nom, avancer
+
+        logger.info(f"  📋 Multi-ligne: {len(rooms)} pièces trouvées")
+        return rooms
+
     def _rooms_from_regex(self, text, source):
+
         rooms = []
         seen_surfaces = {}
 
@@ -627,10 +858,15 @@ class SuperExtractor:
         # T2 = 1 bedroom + living, T3 = 2 bedrooms + living, etc.
         return f"T{bedrooms + 1}"
 
-    def _detect_property_type(self, rooms):
+    def _detect_property_type(self, rooms, floor: str = ""):
         has_garden = any(r.room_type == RoomType.GARDEN for r in rooms)
         has_cellar = any(r.room_type == RoomType.CELLAR for r in rooms)
-        return "house" if has_garden and has_cellar else "appartment"
+        has_parking = any(r.room_type == RoomType.PARKING for r in rooms)
+        
+        # Maison: a jardin OU cave OU parking OU plusieurs niveaux
+        is_multi_floor = floor and ("+" in floor or "R+1" in floor.upper() or "ETAGE" in floor.upper())
+        
+        return "house" if (has_garden or has_cellar or has_parking or is_multi_floor) else "appartment"
 
     # def _final_dedup(self, rooms):
     #     """
@@ -712,6 +948,13 @@ class SuperExtractor:
 
         calc = sum(r.surface for r in interior)
         diff = abs(calc - living_space)
+        
+        # Always run false duplicate removal to handle cases like 'placard' being confused with 'salle_de_bain'
+        rooms = self._remove_false_duplicates(rooms)
+        interior = [r for r in rooms if not r.is_exterior and not r.is_composite]
+        exterior = [r for r in rooms if r.is_exterior]
+        calc = sum(r.surface for r in interior)
+        diff = abs(calc - living_space)
 
         if diff <= 1.0:
             return rooms
@@ -775,6 +1018,13 @@ class SuperExtractor:
                             by_type_num[key] = r
                 best = list(by_type_num.values())
                 
+                # Remove false duplicates: if 'placard' has same surface as 'salle_de_bain', keep only salle_de_bain
+                # This handles cases where OCR misreads room names
+                sdb_surfaces = {round(r.surface, 2) for r in best if 'salle_de_bain' in r.name_normalized}
+                if sdb_surfaces:
+                    best = [r for r in best 
+                            if not (r.name_normalized == 'placard' and round(r.surface, 2) in sdb_surfaces)]
+                
                 # Also deduplicate exterior rooms
                 ext_by_type = {}
                 for r in exterior:
@@ -782,6 +1032,10 @@ class SuperExtractor:
                     if base not in ext_by_type or r.surface > ext_by_type[base].surface:
                         ext_by_type[base] = r
                 exterior = list(ext_by_type.values())
+                
+                # Remove false duplicates: if 'placard' has same surface as 'salle_de_bain', keep only salle_de_bain
+                # This handles cases where OCR misreads room names - apply to all results
+                best = self._remove_false_duplicates(best)
                 
                 result = best + exterior
                 logger.info(
@@ -791,6 +1045,30 @@ class SuperExtractor:
 
         return rooms
 
+    def _remove_false_duplicates(self, rooms):
+        """
+        Remove false duplicates based on surface matching.
+        If 'placard' has the same surface as 'salle_de_bain', remove the placard.
+        This handles OCR misreads where room names are confused.
+        """
+        if not rooms:
+            return rooms
+        
+        # Find surfaces that have both salle_de_bain and placard
+        sdb_surfaces = {round(r.surface, 2) for r in rooms if 'salle_de_bain' in r.name_normalized}
+        
+        if not sdb_surfaces:
+            return rooms
+        
+        # Filter out placard rooms with same surface as salle_de_bain
+        filtered = [r for r in rooms 
+                   if not (r.name_normalized == 'placard' and round(r.surface, 2) in sdb_surfaces)]
+        
+        if len(filtered) < len(rooms):
+            logger.info(f"  🔧 Supprimé {len(rooms) - len(filtered)} doublons faux: placard avec même surface que salle_de_bain")
+        
+        return filtered
+    
     def _filter_exteriors(self, exterior_rooms):
         """Dédoublonne les extérieurs: garde 1 par type (le plus grand)"""
         by_type = {}
