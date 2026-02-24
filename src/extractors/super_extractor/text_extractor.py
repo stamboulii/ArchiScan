@@ -122,7 +122,7 @@ class TextExtractor:
             doc.close()
             return self._clean_text(text)
         except ImportError as e:
-            logger.error(f"OCR dépendances manquantes: {e}")
+            logger.error(f"OCR dependances manquantes: {e}")
             return ""
         except Exception as e:
             logger.warning(f"OCR error: {e}")
@@ -137,7 +137,7 @@ class TextExtractor:
         """
         try:
             import fitz
-            from PIL import Image, ImageEnhance, ImageFilter
+            from PIL import Image, ImageEnhance
             import pytesseract
             import re
 
@@ -159,27 +159,12 @@ class TextExtractor:
                 pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
                 img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
                 
-                # Preprocessing ameliore pour scans de mauvaise qualite
+                # Preprocessing minimal - juste convertir en gris
                 img_gray = img.convert('L')
                 
-                # Augmenter le contraste
-                enhancer = ImageEnhance.Contrast(img_gray)
-                img_gray = enhancer.enhance(2.0)
-                
-                # Augmenter la nettete
-                enhancer = ImageEnhance.Sharpness(img_gray)
-                img_gray = enhancer.enhance(2.0)
-                
-                # Appliquer un filtre de nettete
-                img_gray = img_gray.filter(ImageFilter.SHARPEN)
-                
-                # Binarisation simple pour ameliorer le contraste
-                img_array = img_gray.point(lambda x: 0 if x < 128 else 255, '1')
-                img_binary = img_array.convert('L')
-                
-                # OCR avec configuration optimisee pour les scans
+                # OCR avec donnees de position
                 data = pytesseract.image_to_data(
-                    img_binary,
+                    img_gray,
                     lang="fra+eng",
                     output_type=pytesseract.Output.DICT
                 )
@@ -209,13 +194,32 @@ class TextExtractor:
                     "lines": lines,
                 })
                 
-                #Texte complet avec le meme preprocessing
+                # Pour le texte complet (full page, psm 3)
                 page_text = pytesseract.image_to_string(
-                    img_binary,
+                    img_gray,
                     lang="fra+eng",
                     config="--oem 3 --psm 3"
                 )
                 full_text += page_text + "\n"
+                
+                # Re-OCR the right column only (summary table) at higher DPI + psm 6
+                # This captures rows that psm 3 misses due to mixed layout noise
+                try:
+                    right_x = int(pix.width * 0.62)
+                    img_table = img.crop((right_x, 0, pix.width, pix.height))
+                    # Upscale 1.5x for better Tesseract accuracy on small text
+                    new_w = int(img_table.width * 1.5)
+                    new_h = int(img_table.height * 1.5)
+                    img_table = img_table.resize((new_w, new_h))
+                    img_table_gray = img_table.convert('L')
+                    table_text = pytesseract.image_to_string(
+                        img_table_gray,
+                        lang="fra+eng",
+                        config="--oem 3 --psm 6"
+                    )
+                    full_text += "\n" + table_text
+                except Exception:
+                    pass
             
             doc.close()
             return self._clean_text(full_text), pages_data

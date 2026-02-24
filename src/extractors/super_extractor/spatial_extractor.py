@@ -182,17 +182,18 @@ class SpatialExtractor:
             target_lines = [l for l in text_lines if l["y0"] < height * 0.90]
             logger.info(f"  ⬆️ Zone haute y<{height*0.90:.0f}: {len(target_lines)} lignes")
 
-        # Filtrer les lignes avec des surfaces
+        # Filtrer les lignes avec des surfaces - version tolérance OCR artifacts
         surface_lines = []
         for line in target_lines:
             text = line["text"]
-            if re.search(r"\d+[\.,]\d+\s*m\s*[²2\xa0]?\s*$", text, re.IGNORECASE):
+            # Recherche de surface plus tolérante: autorise ? et autres caractères après m²
+            if re.search(r"\d+[\.,]\d+\s*m\s*[²2\xa0]?[?]*", text, re.IGNORECASE):
                 surface_lines.append(line)
             elif any(kw in text.upper() for kw in [
                 "CHAMBRE", "SEJOUR", "CUISINE", "SDB", "SDE", "WC",
-                "ENTREE", "ENTR\u00c9E",  # avec accent
+                "ENTREE", "ENTRÉÉ",  # avec accent
                 "BALCON", "CELLIER", "SALLE",
-                "JARDIN", "CIRCULATION", "DGT", "D\u00c9GAGEMENT", "COULOIR",
+                "JARDIN", "CIRCULATION", "DGT", "DÉGAGEMENT", "COULOIR",
                 "PALIER", "ESCALIER",
                 "GARAGE", "BOX", "PARKING", "STATIONNEMENT",  # ← manquaient
                 "BUANDERIE", "LINGERIE", "PLACARD", "RANGEMENT",
@@ -227,6 +228,11 @@ class SpatialExtractor:
 
         for line in merged_lines:
             text = line["text"].strip()
+            # ── Nettoyer le bruit OCR AVANT tout matching ──────────────────
+            # Supprime les préfixes parasites: '| " } 2 O Q G 228 Séjour' → 'Séjour'
+            text = self._strip_line_noise(text)
+            if not text:
+                continue
             text_upper = text.upper()
 
             # Détecter totaux
@@ -250,33 +256,42 @@ class SpatialExtractor:
                 logger.info(f"    ⏭️ SKIP (métadonnée): '{text}'")
                 continue
 
+            # Pattern matching avec tolérance pour OCR artifacts (?, etc.)
             # Pattern 1: Format standard "Nom pièce    XX.XX m²" 
             match = re.match(
-                r"^([A-Za-z\u00C0-\u017F][A-Za-z\u00C0-\u017F\s\-'/\.\d]*\S)"
-                r"\s+(\d+[\.,]\d+)\s*m\s*[²2\xa0]?\s*$",
+                r"^([A-Za-z\u00C0-\u017F][A-Za-z\u00C0-\u017F\s\-'/\.\+\d]*\S)"
+                r"\s+(\d+[\.,]\d+)\s*m\s*[²2\xa0]?[?]*\s*$",
                 text, re.IGNORECASE
             )
             
             # Pattern 2: Format collé "ENTREE/DGT 9,85m²" 
             if not match:
                 match = re.match(
-                    r"^([A-Za-z\u00C0-\u017F/][A-Za-z\u00C0-\u017F\s\-'/\d]*?)"
-                    r"\s*(\d+[\.,]\d+)\s*m\s*[²2\xa0]?\s*$",
+                    r"^([A-Za-z\u00C0-\u017F/][A-Za-z\u00C0-\u017F\s\-'/\+\d]*?)"
+                    r"\s*(\d+[\.,]\d+)\s*m\s*[²2\xa0]?[?]*\s*$",
                     text, re.IGNORECASE
                 )
             
             # Pattern 3: Format ultra-collé sans espace "CELLIER1,78m²"
             if not match:
                 match = re.match(
-                    r"^([A-Za-z\u00C0-\u017F][A-Za-z\u00C0-\u017F\s\-'/\d]*?)"
-                    r"(\d+[\.,]\d+)\s*m\s*[²2\xa0]?\s*$",
+                    r"^([A-Za-z\u00C0-\u017F][A-Za-z\u00C0-\u017F\s\-'/\+\d]*?)"
+                    r"(\d+[\.,]\d+)\s*m\s*[²2\xa0]?[?]*\s*$",
                     text, re.IGNORECASE
                 )
             
             # Pattern 4: Format inversé "XX.XX m² NOM"
             if not match:
                 match = re.match(
-                    r"^(\d+[\.,]\d+)\s*m\s*[²2\xa0]?\s+([A-Za-z\u00C0-\u017F][A-Za-z\u00C0-\u017F\s\-'/0-9]+)",
+                    r"^(\d+[\.,]\d+)\s*m\s*[²2\xa0]?[?]*\s+([A-Za-z\u00C0-\u017F][A-Za-z\u00C0-\u017F\s\-'/0-9]+)",
+                    text, re.IGNORECASE
+                )
+            
+            # Pattern 5: Integer surface (OCR dropped decimal) "NOM 397 m?"
+            if not match:
+                match = re.match(
+                    r"^([A-Za-z\u00C0-\u017F][A-Za-z\u00C0-\u017F\s\-'/\.\+\d]*?\S)"
+                    r"\s+(\d{3,4})\s*m\s*[²2\xa0]?[?]*\s*$",
                     text, re.IGNORECASE
                 )
                 
@@ -296,6 +311,8 @@ class SpatialExtractor:
                 
                 # Filtrer noms numériques et trop courts
                 if not re.match(r"^\d+$", name) and len(name) >= 2:
+                    # Fix missing decimal point from OCR: 397→3.97, 1226→12.26
+                    surface_str = self._fix_missing_decimal(surface_str)
                     result["table_rows"].append((name, surface_str))
                     logger.info(f"    ✅ MATCH: '{name}' = {surface_str}m²")
                 else:
@@ -311,6 +328,78 @@ class SpatialExtractor:
             logger.info(f"      - {name}: {surf}m²")
             
         return result
+
+    # Known room keyword prefixes used to detect where real name starts after noise
+    # Order: longer/more-specific first to avoid partial matches
+    ROOM_KEYWORDS_FOR_STRIP = [
+        "SÉJOUR", "SEJOUR", "SALLE DE BAIN", "SALLE D'EAU", "SALLE",
+        "CHAMBRE", "ENTREE", "ENTRÉE", "CUISINE",
+        "SDB", "SDE", "WC", "DGT", "DÉGAGEMENT", "DEGAGEMENT",
+        "CIRCULATION", "COULOIR", "PALIER", "ESCALIER",
+        "BALCON", "TERRASSE", "JARDIN", "LOGGIA", "PATIO",
+        "GARAGE", "PARKING", "CAVE", "CELLIER", "BUANDERIE",
+        "PLACARD", "RANGEMENT", "DRESSING",
+        "SURFACE", "TOTAL",
+    ]
+
+    def _strip_line_noise(self, text: str) -> str:
+        """
+        Remove OCR noise PREFIX from a line — only strips characters BEFORE
+        the first known room keyword that appears after actual noise.
+
+        'O Q G 228 Séjour / Cuisine + Pl 24.59 m?' → 'Séjour / Cuisine + Pl 24.59 m?'
+        'D / } =+ Séjour / Cuisine + Pl 24.59 m?' → 'Séjour / Cuisine + Pl 24.59 m?'
+        '| SDB + WC 3.97 m?' → 'SDB + WC 3.97 m?'
+
+        Key rule: only strip if the characters BEFORE the keyword are pure noise
+        (pipes, braces, isolated digits/letters) — not a valid compound name prefix
+        like "Séjour / " before "Cuisine".
+        """
+        text_upper = text.upper()
+
+        # Find the earliest keyword preceded only by noise (no real word before it)
+        best_idx = None
+        for kw in self.ROOM_KEYWORDS_FOR_STRIP:
+            idx = text_upper.find(kw)
+            if idx <= 0:
+                continue  # not found or already at start — no stripping needed
+            prefix = text[:idx]
+            # Noise = no letter sequences of 3+ chars in the prefix
+            real_words = re.findall(r'[A-Za-zÀ-ÿ]{3,}', prefix)
+            if not real_words:
+                if best_idx is None or idx < best_idx:
+                    best_idx = idx
+
+        if best_idx is not None:
+            text = text[best_idx:].strip()
+        else:
+            # Fallback: strip leading non-letter chars (pipes, quotes, braces)
+            text = re.sub(r"^[^A-Za-zÀ-ÿ]+", "", text).strip()
+
+        # Remove inline noise tokens: isolated punctuation/braces between words
+        # 'Dgt. } + Pl 4.04 m?' → 'Dgt. + Pl 4.04 m?'
+        text = re.sub(r'\s+[^\w\s\.À-ÿ+/]+\s+', ' ', text)
+
+        return text.strip() if text else text
+
+    def _fix_missing_decimal(self, surface_str: str) -> str:
+        """
+        OCR sometimes drops the decimal point: '397' → '3.97', '1226' → '12.26'.
+        Only applies to 3-4 digit integers in plausible room surface range.
+        A decimal value is returned unchanged.
+        """
+        # Already has decimal → no fix needed
+        if "." in surface_str or "," in surface_str:
+            return surface_str
+        try:
+            val = int(surface_str)
+            if 100 <= val <= 999:    # 3 digits: 397 → 3.97
+                return f"{surface_str[0]}.{surface_str[1:]}"
+            elif 1000 <= val <= 9999:  # 4 digits: 1226 → 12.26
+                return f"{surface_str[:2]}.{surface_str[2:]}"
+        except ValueError:
+            pass
+        return surface_str
 
     def _find_reference_position(self, lines: List[Dict], reference: str) -> Optional[float]:
         """Trouve la position Y de la référence dans le texte"""
@@ -397,7 +486,7 @@ class SpatialExtractor:
         """Trouve n'importe quel nom de pièce à proximité (en Y) - moins strict
         
         Cette méthode est utilisée pour trouver des pièces qui pourraient être
-        manquantes mais dont la surface apparaît séparément dans le PDF.
+ manquantes mais dont la surface apparaît séparément dans le PDF.
         """
         ROOM_KEYWORDS = ["CHAMBRE", "SEJOUR", "CUISINE", "SDB", "SDE", "WC", "ENTREE", "BALCON", "CELLIER", "SALLE", "JARDIN", "CIRCULATION", "DGT", "DÉGAGEMENT", "COULOIR", "PALIER", "RGT", "LOCAL"]
         

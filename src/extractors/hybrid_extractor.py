@@ -260,6 +260,13 @@ class HybridExtractor:
                 'method': 'super',
                 'accuracy': '85-95%',
             },
+            'easyocr': {
+                'phase': 'easyocr',
+                'name': 'EasyOCR - OCR Pure Python',
+                'description': 'OCR sans binaire externe (pip install easyocr)',
+                'method': 'easyocr',
+                'accuracy': '75-85%',
+            },
         }
         return descriptions.get(phase, descriptions[0])
     
@@ -268,11 +275,11 @@ class HybridExtractor:
         if self.force_method:
             return self.force_method
         
-        # Phase 1: Claude si disponible
+        # Phase 1: Claude si disponible (le plus precis)
         if self.claude_extractor.is_available():
             return PHASE_CLAUDE
         
-        # Phase 0: Tesseract seulement si disponible
+        # Phase Tesseract: OCR systeme (si installe)
         if self._is_tesseract_available():
             return PHASE_TESSERACT
         
@@ -313,9 +320,27 @@ class HybridExtractor:
             result = self._extract_with_tesseract(image_path)
             result['_extraction_meta'] = result.get('_extraction_meta', {})
             result['_extraction_meta']['fallback_reason'] = "ML Custom pas encore entraine"
-        else:
-            # Tesseract pour les autres cas (tesseract, pymupdf handled elsewhere)
+        elif method == PHASE_TESSERACT:
+            # Tesseract: OCR systeme
             result = self._extract_with_tesseract(image_path)
+        else:
+            # Aucune methode disponible - fallback vers PyMuPDF
+            logger.warning("Aucune methode d'extraction disponible (Claude et Tesseract). Tentative avec PyMuPDF.")
+            # Verifier si on peut au moins extraire avec PyMuPDF
+            if image_path.lower().endswith('.pdf'):
+                result = self.extract_from_pdf(image_path)
+                result['_extraction_meta'] = result.get('_extraction_meta', {})
+                result['_extraction_meta']['fallback_reason'] = "Ni Claude ni Tesseract disponibles"
+                return result
+            else:
+                raise ExtractionError(
+                    "Aucune methode d'extraction disponible.\n"
+                    "- Claude Vision: Non configure (verifiez ANTHROPIC_API_KEY)\n"
+                    "- EasyOCR: Non installe (pip install easyocr)\n"
+                    "- Tesseract: Non installe ou non configure\n"
+                    "- Fichier non-PDF: Impossible d'utiliser PyMuPDF\n"
+                    "Veuillez installer EasyOCR, Tesseract ou configurer Claude Vision API."
+                )
         
         # Sauvegarder dans le data store
         try:
@@ -564,7 +589,8 @@ class HybridExtractor:
                 "Tesseract OCR n'est pas configure. \n"
                 "Sur Windows avec Scoop: TESSDATA_PREFIX doit pointer vers le dossier tessdata.\n"
                 "Exemple: set TESSDATA_PREFIX=C:\\Users\\MSI\\scoop\\persist\\tesseract\\tessdata\n"
-                "Ou ajoutez des credits Anthropic pour utiliser Claude Vision."
+                "Ou installez Tesseract depuis: https://github.com/UB-Mannheim/tesseract/wiki\n"
+                "Vous pouvez aussi utiliser Claude Vision avec ANTHROPIC_API_KEY."
             )
             
         try:
@@ -596,11 +622,141 @@ class HybridExtractor:
             logger.error(f"Tesseract echoue: {e}")
             raise ExtractionError(f"Extraction Tesseract echouee: {e}")
     
+    def _extract_with_easyocr(self, image_path: str) -> Dict:
+        """Extraction avec EasyOCR (pure Python)."""
+        # Verifier si EasyOCR est disponible
+        if not self._is_easyocr_available():
+            raise ExtractionError(
+                "EasyOCR n'est pas installe.\n"
+                "Installez avec: pip install easyocr\n"
+                "Ou utilisez Claude Vision avec ANTHROPIC_API_KEY."
+            )
+        
+        try:
+            # Convertir PDF en image si necessaire
+            from src.core.pdf_utils import PDFProcessor
+            pdf_processor = PDFProcessor()
+            actual_path = image_path
+            
+            if image_path.lower().endswith('.pdf'):
+                logger.info(f"Conversion PDF en image pour EasyOCR: {image_path}")
+                pages = pdf_processor.convert_pdf_to_images(image_path)
+                if pages:
+                    actual_path = pages[0].image_path
+                else:
+                    raise ExtractionError("Impossible de convertir le PDF en image")
+            
+            # Extraire le texte avec EasyOCR
+            reader = self.easyocr
+            results = reader.readtext(actual_path)
+            
+            # Combiner tout le texte trouve
+            full_text = "\n".join([result[1] for result in results])
+            
+            # Calculer la confiance moyenne
+            confidences = [result[2] for result in results if result[2]]
+            avg_confidence = sum(confidences) / len(confidences) if confidences else 0.5
+            
+            # Parser le texte pour extraire les donnees du plan
+            from src.extractors.tesseract_extractor import ArchitecturePlanExtractor
+            parser = ArchitecturePlanExtractor()
+            result = parser.parse_text_to_data(full_text)
+            
+            # Ajouter les metadonnees
+            result['_extraction_meta'] = {
+                'method': PHASE_EASYOCR,
+                'confidence': avg_confidence,
+                'model': 'easyocr',
+                'text_length': len(full_text)
+            }
+            
+            logger.info(f"EasyOCR extraction terminee, confiance: {avg_confidence:.2f}")
+            return result
+            
+        except ExtractionError:
+            raise
+        except Exception as e:
+            logger.error(f"EasyOCR echoue: {e}")
+            raise ExtractionError(f"Extraction Tesseract echouee: {e}")
+    
     def _is_tesseract_available(self) -> bool:
         """Verifie si Tesseract est correctement configure."""
         try:
             import subprocess
             import os
+            
+            # PRIORITE 1: Verifier si un dossier tesseract local existe dans le projet
+            project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            local_tesseract_dir = os.path.join(project_root, 'tesseract')
+            tesseract_exe = os.path.join(local_tesseract_dir, 'tesseract.exe')
+            
+            if os.path.exists(tesseract_exe):
+                # Ajouter le chemin au PATH si necessaire
+                os.environ['PATH'] = local_tesseract_dir + os.pathsep + os.environ.get('PATH', '')
+                
+                # Verifier le dossier tessdata
+                local_tessdata = os.path.join(local_tesseract_dir, 'tessdata')
+                if os.path.exists(local_tessdata):
+                    os.environ['TESSDATA_PREFIX'] = local_tessdata
+                elif os.path.exists(os.path.join(project_root, 'tessdata')):
+                    os.environ['TESSDATA_PREFIX'] = os.path.join(project_root, 'tessdata')
+                
+                # Verifier que tesseract fonctionne
+                try:
+                    result = subprocess.run(
+                        [tesseract_exe, '--version'],
+                        capture_output=True,
+                        text=True,
+                        timeout=5
+                    )
+                    if result.returncode == 0:
+                        logger.info(f"Tesseract local trouve: {tesseract_exe}")
+                        return True
+                except Exception as e:
+                    logger.warning(f"Erreur verification Tesseract local: {e}")
+            
+            # PRIORITE 2: Verifier si un dossier tessdata local existe
+            local_tessdata = os.path.join(os.getcwd(), 'tessdata')
+            if os.path.exists(os.path.join(local_tessdata, 'eng.traineddata')):
+                os.environ['TESSDATA_PREFIX'] = local_tessdata
+                logger.info(f"Using local TESSDATA_PREFIX: {local_tessdata}")
+                # Verifier que tesseract est installe (le binaire)
+                try:
+                    result = subprocess.run(
+                        ['tesseract', '--version'],
+                        capture_output=True,
+                        text=True,
+                        timeout=5
+                    )
+                    if result.returncode == 0:
+                        logger.info("Tesseract binaire trouve et fonctionnel")
+                        return True
+                except FileNotFoundError:
+                    logger.warning("Dossier tessdata local trouve mais Tesseract binaire non installe")
+                    return False
+                except Exception as e:
+                    logger.warning(f"Erreur verification tesseract: {e}")
+                    return False
+            
+            # PRIORITE 3: Verifier TESSDATA_PREFIX environment variable
+            tessdata_prefix = os.environ.get('TESSDATA_PREFIX', '')
+            if not tessdata_prefix:
+                # Essayer de detecter automatiquement sur Windows
+                scoop_tessdata = r'C:\Users\MSI\scoop\persist\tesseract\tessdata'
+                if os.path.exists(scoop_tessdata):
+                    os.environ['TESSDATA_PREFIX'] = scoop_tessdata
+                    logger.info(f"TESSDATA_PREFIX automatiquement configure: {scoop_tessdata}")
+                else:
+                    # Autres chemins Windows possibles
+                    common_paths = [
+                        r'C:\Program Files\Tesseract-OCR\tessdata',
+                        r'C:\Program Files (x86)\Tesseract-OCR\tessdata',
+                    ]
+                    for path in common_paths:
+                        if os.path.exists(path):
+                            os.environ['TESSDATA_PREFIX'] = path
+                            logger.info(f"TESSDATA_PREFIX configure depuis chemin commun: {path}")
+                            break
             
             # Verifier la commande tesseract
             result = subprocess.run(
@@ -612,26 +768,12 @@ class HybridExtractor:
             if result.returncode != 0:
                 return False
             
-            # Verifier si un dossier tessdata local existe (priorite)
-            local_tessdata = os.path.join(os.getcwd(), 'tessdata')
-            if os.path.exists(os.path.join(local_tessdata, 'eng.traineddata')):
-                os.environ['TESSDATA_PREFIX'] = local_tessdata
-                logger.info(f"Using local TESSDATA_PREFIX: {local_tessdata}")
-                return True
-
-            # Verifier TESSDATA_PREFIX environment variable
+            # Verifier que le repertoire tessdata existe
             tessdata_prefix = os.environ.get('TESSDATA_PREFIX', '')
             if not tessdata_prefix:
-                # Essayer de detecter automatiquement sur Windows
-                scoop_tessdata = r'C:\Users\MSI\scoop\persist\tesseract\tessdata'
-                if os.path.exists(scoop_tessdata):
-                    os.environ['TESSDATA_PREFIX'] = scoop_tessdata
-                    logger.info(f"TESSDATA_PREFIX automatiquement configure: {scoop_tessdata}")
-                    return True
                 logger.warning("TESSDATA_PREFIX non configure")
                 return False
             
-            # Verifier que le repertoire tessdata existe
             if not os.path.isdir(tessdata_prefix):
                 logger.warning(f"Repertoire TESSDATA_PREFIX inexistant: {tessdata_prefix}")
                 return False
@@ -643,10 +785,20 @@ class HybridExtractor:
                 return False
             
             return True
+        except FileNotFoundError:
+            logger.warning("Tesseract n'est pas installe sur ce systeme")
+            return False
         except Exception as e:
             logger.error(f"Erreur verification Tesseract: {e}")
             return False
-        except Exception:
+    
+    def _is_easyocr_available(self) -> bool:
+        """Verifie si EasyOCR est disponible."""
+        try:
+            reader = self.easyocr
+            return reader is not None
+        except Exception as e:
+            logger.warning(f"EasyOCR non disponible: {e}")
             return False
     
     def _extract_with_claude(self, image_path: str) -> Dict:

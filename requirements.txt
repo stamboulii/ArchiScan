@@ -12,7 +12,9 @@ Pillow                   # Manipulation d'images
 numpy                    # Operations numeriques (sans contrainte de version)
 
 # === Alternative OCR (optionnel) ===
-# Decommentez si necessaire:
+# EasyOCR - OCR pure Python (optionnel, pas necessaire si Tesseract est installe)
+# Note: Necessite ~500MB et PyTorch
+# Decommentez si vous n'avez pas Tesseract:
 # easyocr>=1.7.0
 # google-cloud-vision>=3.4.4
 

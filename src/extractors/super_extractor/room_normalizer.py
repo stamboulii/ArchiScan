@@ -29,16 +29,16 @@ class RoomNormalizer:
             (r"^(LIVING|ESPACE)\s*/?\s*(CUISINE|KITCHEN)",
             "sejour_cuisine", RoomType.LIVING_KITCHEN, False),
 
-            # SDB/WC combiné
-            (r"^(SDB\s*/\s*WC|SDB\s*WC|SALLE\s*DE\s*BAINS?\s*/?\s*WC)$",
+            # SDB/WC combiné (accepte / ou + comme séparateur — OCR confond les deux)
+            (r"^(SDB\s*[/+]\s*WC|SDB\s*WC|SALLE\s*DE\s*BAINS?\s*[/+]?\s*WC)$",
             "salle_de_bain", RoomType.BATHROOM, False),
-            (r"^(WC\s*/\s*SDB|WC\s*SDB)$",
+            (r"^(WC\s*[/+]\s*SDB|WC\s*SDB)$",
             "salle_de_bain", RoomType.BATHROOM, False),
 
-            # SDE/WC combiné (salle d'eau + WC)
-            (r"^(SDE\s*/\s*WC|SDE\s*WC|SALLE\s*D['\u2019]?\s*EAU\s*/?\s*WC)$",
+            # SDE/WC combiné (accepte / ou + comme séparateur — OCR confond les deux)
+            (r"^(SDE\s*[/+]\s*WC|SDE\s*WC|SALLE\s*D['\u2019]?\s*EAU\s*[/+]?\s*WC)$",
             "salle_d_eau", RoomType.SHOWER_ROOM, False),
-            (r"^(WC\s*/\s*SDE|WC\s*SDE)$",
+            (r"^(WC\s*[/+]\s*SDE|WC\s*SDE)$",
             "salle_d_eau", RoomType.SHOWER_ROOM, False),
 
             # ══════════════════════════════════════════
@@ -96,6 +96,10 @@ class RoomNormalizer:
             # ══════════════════════════════════════════
             # CIRCULATION / DÉGAGEMENT
             # ══════════════════════════════════════════
+            # DGT + PLACARD combiné ex: "Dgt. + Pl." (OCR: "Dgt.+PI.", "Dot.+PI.")
+            # After OCR corrections in normalize(), these all become "DGT.+PL."
+            (r"^D\.?G\.?T\.?\s*[+]\s*P[LI]\.?\s*$",
+             "circulation", RoomType.CIRCULATION, False),
             # PALIER -> palier (not circulation)
             (r"^(PALIER)$",
             "palier", RoomType.CIRCULATION, False),
@@ -107,7 +111,11 @@ class RoomNormalizer:
             # CHAMBRES
             # ══════════════════════════════════════════
             (r"^CHAMBRE\s*(\d+)$", "chambre_{n}", RoomType.BEDROOM, False),
+            # Chambre avec placard: "Chambre 1 + Pl." or "Chambre1+Pl."
+            (r"^CHAMBRE\s*(\d+)\s*[+\.].*$", "chambre_{n}", RoomType.BEDROOM, False),
             (r"^CHAMBRE$", "chambre", RoomType.BEDROOM, False),
+            # OCR variant: digit misread as "Pl" → "Chambre Pl" = Chambre (numéro inconnu)
+            (r"^CHAMBRE\s+PL\.?\s*(\d*)$", "chambre_{n}", RoomType.BEDROOM, False),
             (r"^CH\.?\s*(\d+)$", "chambre_{n}", RoomType.BEDROOM, False),
             (r"^SUITE\s*PARENTALE\s*(\d*)$", "chambre_{n}", RoomType.BEDROOM, False),
             (r"^(BUREAU|OFFICE|CABINET)\s*(\d*)$", "chambre_{n}", RoomType.BEDROOM, False),
@@ -246,8 +254,23 @@ class RoomNormalizer:
         # Supprimer les préfixes comme "m2" (format OCR corrompu: "m2 Entrée")
         name_clean = re.sub(r"^M2\s+", "", name_clean).strip()
         
+        # Supprimer le bruit OCR en FIN seulement (ex: 'Dgt.+Pl. !' → 'Dgt.+Pl.')
+        # NB: le bruit en DÉBUT est géré par spatial_extractor._strip_line_noise()
+        name_clean = re.sub(r"[^A-ZÀ-Ÿ0-9\.\+/\s]+$", "", name_clean).strip()
+
+        # ── Corrections OCR systématiques ──────────────────────────────────
+        # "DOT" ou "DAT" → "DGT" (g lu comme o ou a par l'OCR)
+        name_clean = re.sub(r"\bD[OA]T\b", "DGT", name_clean)
+        # "PI" → "PL" quand c'est un placard abrégé (l minuscule lu comme I majuscule)
+        # Règle: PI seul, ou après +/espace, suivi d'un point ou fin de mot
+        # Exclure: PIECE, PLAN, PISCINE, etc. (PI suivi d'une lettre autre que . ou fin)
+        name_clean = re.sub(r"(?<=[\s\+])PI(?=[\.,\s]|$)", "PL", name_clean)
+        name_clean = re.sub(r"\+PI(?=[\.,\s]|$)", "+PL", name_clean)
+        # "CHAMBRE1+PL" → "CHAMBRE 1 + PL" (normaliser les espaces autour du +)
+        name_clean = re.sub(r"(CHAMBRE\d+)\+", r"\1 + ", name_clean)
+
         # Normaliser les espaces
-        name_clean = re.sub(r"\s+", " ", name_clean)
+        name_clean = re.sub(r"\s+", " ", name_clean).strip()
 
         for pattern, name_template, room_type, is_exterior in self.ROOM_ALIASES:
             match = re.match(pattern, name_clean, re.IGNORECASE)

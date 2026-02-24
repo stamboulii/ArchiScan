@@ -158,6 +158,7 @@ def _render_batch_upload(extractor):
                             result = extractor.extract_from_image(temp_path)
                         
                         # Aplatir les donnees si necessaire
+                        has_nested_data = False
                         if result and len(result) > 0:
                             for key in list(result.keys()):
                                 if isinstance(result[key], dict):
@@ -168,7 +169,24 @@ def _render_batch_upload(extractor):
                                         result['_extraction_meta'] = {'method': force_method or 'unknown'}
                                         if '_validation' not in result:
                                             result['_validation'] = {'is_valid': True, 'errors': [], 'warnings': []}
+                                        has_nested_data = True
                                         break
+                            
+                            # Si aucune donnee imbriquee trouveee, verifier si deja aplatie
+                            if not has_nested_data:
+                                if 'parcelLabel' not in result and 'typology' not in result:
+                                    # Format different - creer lot par defaut
+                                    result = {
+                                        'parcelLabel': f'LOT_{i+1:03d}',
+                                        'typology': '',
+                                        'floor': '',
+                                        'orientation': '',
+                                        'living_space': '',
+                                        'price': 'N.C',
+                                        'surfaceDetail': {},
+                                        'option': {},
+                                        '_extraction_meta': {'method': force_method or 'unknown'}
+                                    }
                         
                         parcel_id = result.get('parcelLabel', f'LOT_{i+1:03d}')
                         
@@ -340,6 +358,31 @@ def _run_extraction(extractor, temp_path: str):
                 # Ajout a la collection
                 parcel_id = st.session_state.extracted_data.get('parcelLabel', key)
                 st.session_state.all_parcels[parcel_id] = st.session_state.extracted_data
+            
+            else:
+                # Pas de cle de type reference trouvee - les donnees sont peut-etre deja aplaties
+                # ou c'est un format different. On les stocke telles quelles.
+                logger.info(f"Aucune cle de reference trouvee. Keys disponibles: {list(result.keys())}")
+                
+                # Verifier si les donnees ont deja les champs attendus (donnees deja aplaties)
+                if 'parcelLabel' in result or 'typology' in result:
+                    st.session_state.extracted_data = result
+                    parcel_id = result.get('parcelLabel', 'UNKNOWN')
+                    st.session_state.all_parcels[parcel_id] = result
+                else:
+                    # C'est un format different - creer un lot par defaut
+                    st.session_state.extracted_data = {
+                        'parcelLabel': 'LOT_001',
+                        'typology': '',
+                        'floor': '',
+                        'orientation': '',
+                        'living_space': '',
+                        'price': 'N.C',
+                        'surfaceDetail': {},
+                        'option': {},
+                        '_extraction_meta': {'method': force_method or 'unknown'}
+                    }
+                    st.session_state.all_parcels['LOT_001'] = st.session_state.extracted_data
             
             st.session_state.last_extraction_id = result.get('_extraction_id')
 

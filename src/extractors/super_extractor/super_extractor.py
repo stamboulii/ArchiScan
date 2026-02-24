@@ -448,12 +448,22 @@ class SuperExtractor:
             rooms = self._merge_rooms(rooms, rooms_regex)
             logger.info(f"  📝 +regex PyMuPDF → {len(rooms)} pièces")
 
-        # Priorité 3: regex sur texte OCR
-        if len(rooms) < 3 and text_data["text_ocr"]:
+        # Priorité 3: OCR tolerant pass — ALWAYS runs when OCR text available
+        # (not just as fallback) because some rooms only appear in OCR text,
+        # e.g. Entrée and Chambre 2 buried in noisy lines the spatial extractor can't parse
+        if text_data["text_ocr"]:
             self.normalizer.reset()
-            rooms_ocr = self._rooms_from_regex(text_data["text_ocr"], "ocr")
-            rooms = self._merge_rooms(rooms, rooms_ocr)
-            logger.info(f"  🔍 +regex OCR → {len(rooms)} pièces")
+            rooms_ocr, ocr_total = self._extract_rooms_from_text(text_data["text_ocr"], "ocr")
+            if rooms_ocr:
+                before = len(rooms)
+                rooms = self._merge_rooms(rooms, rooms_ocr)
+                added = len(rooms) - before
+                logger.info(f"  🔍 +OCR toléré → {added} pièces ajoutées ({len(rooms)} total)")
+            
+            # Utiliser la surface totale OCR si spatial n'a pas trouvé de surface
+            if ocr_total and ocr_total > 0 and not spatial_data.get('living_space'):
+                spatial_data['living_space'] = ocr_total
+                logger.info(f"  📄 Surface totale OCR: {ocr_total} m²")
 
         # Étape 3b: Dédoublonnage final
         rooms = self._final_dedup(rooms)
@@ -527,6 +537,12 @@ class SuperExtractor:
         else:
             result.typology = room_typology
         result.property_type = self._detect_property_type(rooms, result.floor)
+
+        # ── ÉTAPE 7a: Inférence chambre manquante ────────────
+        # Si la surface calculée est inférieure à la surface déclarée d'exactement
+        # la surface d'une chambre plausible (5-40 m²), on infère la chambre manquante.
+        # Cas typique: OCR dégradé sur une cellule du tableau récapitulatif.
+        result = self._infer_missing_bedroom(result)
 
         # ── ÉTAPE 7: Validation ───────────────────────────────
         self.validator.validate(result)
@@ -766,6 +782,172 @@ class SuperExtractor:
                     confidence=conf * 0.85,
                 ))
         return rooms
+
+    def _extract_rooms_from_text(self, text: str, source: str) -> List['ExtractedRoom']:
+        """
+        Version tolérante aux erreurs d'OCR.
+        Nettoie d'abord le texte OCR avant d'appliquer les patterns.
+        """
+        # Mapping des noms normalisés vers les RoomTypes
+        ROOM_TYPE_MAPPING = {
+            'entree': 'ENTRY',
+            'sejour': 'LIVING_ROOM',
+            'cuisine': 'KITCHEN',
+            'sejour_cuisine': 'LIVING_KITCHEN',
+            'circulation': 'CIRCULATION',
+            'storage': 'STORAGE',
+            'dressing': 'DRESSING',
+            'salle_de_bain': 'BATHROOM',
+            'salle_d_eau': 'SHOWER_ROOM',
+            'salle_d_eau_wc': 'SHOWER_ROOM',
+            'wc': 'WC',
+            'balcon': 'BALCONY',
+            'terrasse': 'TERRACE',
+            'jardin': 'GARDEN',
+            'loggia': 'LOGGIA',
+            'patio': 'PATIO',
+            'parking': 'PARKING',
+            'cave': 'CELLAR',
+        }
+        # Toutes les chambres numérotées (1..9) → BEDROOM
+        for n in range(1, 10):
+            ROOM_TYPE_MAPPING[f'chambre_{n}'] = 'BEDROOM'
+        ROOM_TYPE_MAPPING['chambre'] = 'BEDROOM'
+        
+        # RoomTypes extérieurs (ne comptent pas dans habitable)
+        EXTERIOR_ROOM_TYPES = {'GARDEN', 'BALCONY', 'TERRACE', 'LOGGIA', 'PATIO', 'PARKING', 'CELLAR'}
+        
+        # Nettoyage OCR
+        text = self._clean_ocr_text(text)
+        
+        rooms = []
+        
+        # Patterns spécifiques pour OCR dégradé
+        # Note: Chambre N est géré dynamiquement plus bas (générique, N=1..9)
+        ocr_tolerant_patterns = [
+            # Entrée + Pl. — [^\d]{0,20} tolerates OCR noise like "' + PI." between name and surface
+            (r"Entr(?:é|e|è)e?[^\d]{0,20}(\d+[\.,]\d+)", 'entree'),
+            # SDE + WC (avec variantes: /|+)
+            (r'SDE\s*[/+]\s*WC\s*(\d+[\.,]\d+)', 'salle_d_eau_wc'),
+            # Séjour / Cuisine + Pl. (variantes: /|+, avec ou sans Pl.)
+            (r'S[ée]jour\s*[/+]\s*Cuisine(?:\s*\+\s*Pl?\.?)?\s*[^\d]*(\d+[\.,]\d+)', 'sejour_cuisine'),
+            # SDB + WC (avec variantes: /|+, sDB OCR variant)
+            (r'[Ss][Dd][Bb]\s*[/+]\s*WC[^\d]*(\d+[\.,]\d+)', 'salle_de_bain'),
+            # Dgt. + Pl. (variantes OCR: Dot/Dgt/Dat, PI/Pl)
+            (r'D[oOgGaA][tT]\.?\s*\+\s*P[lLiI]\.?\s*(\d+[\.,]\d+)', 'circulation'),
+            # Jardin
+            (r'Jardin[^\d]*(\d+[\.,]\d+)', 'jardin'),
+        ]
+        
+        # Patterns génériques pour Chambre N (N=1..9) + Pl. optionnel
+        # Gère: "Chambre 1 + Pl. 12.26", "Chambre 2 10.71", "Chambre 3 + Pl. 9.50"
+        for n in range(1, 10):
+            # Standard: with decimal point
+            ocr_tolerant_patterns.append((
+                rf'(?:Chambre|Ch\.?)\s*{n}(?:\s*\+\s*Pl?\.?)?\s*[^\d]{{0,5}}(\d+[\.,]\d+)',
+                f'chambre_{n}'
+            ))
+            # OCR dropped decimal: "Chambre 2 1071" → 10.71 (4-digit integer)
+            ocr_tolerant_patterns.append((
+                rf'(?:Chambre|Ch\.?)\s*{n}(?:\s*\+\s*Pl?\.?)?\s+([1-9]\d{{3}})(?:\s|m|$)',
+                f'chambre_{n}_nodecimal'
+            ))
+        
+        seen_surfaces = {}
+        
+        for pattern, room_type in ocr_tolerant_patterns:
+            matches = re.finditer(pattern, text, re.IGNORECASE)
+            for match in matches:
+                try:
+                    # Extraire le nombre brut
+                    raw_num = match.group(1)
+                    
+                    # Gérer les nombres sans décimale (ex: "1071" -> 10.71)
+                    if ',' not in raw_num and '.' not in raw_num and len(raw_num) == 4:
+                        try:
+                            surface = float(raw_num[:2] + '.' + raw_num[2:])
+                        except:
+                            surface = float(raw_num)
+                    else:
+                        surface = float(raw_num.replace(',', '.'))
+                    
+                    # Filtrer les surfaces aberrantes
+                    if surface < 0.5 or surface > 500:
+                        continue
+                    
+                    # Strip _nodecimal suffix before mapping (used for integer-surface variants)
+                    room_type_key = room_type.replace('_nodecimal', '')
+                    # Mapper vers le type de pièce correct
+                    enum_name = ROOM_TYPE_MAPPING.get(room_type_key, room_type_key.upper())
+                    room_type_enum = getattr(RoomType, enum_name, None)
+                    
+                    if room_type_enum is None:
+                        continue
+                    
+                    # Déterminer si c'est une pièce extérieure
+                    is_exterior = enum_name in EXTERIOR_ROOM_TYPES
+                    
+                    dedup_key = (room_type_key, round(surface, 2))
+                    if dedup_key in seen_surfaces:
+                        continue
+                    seen_surfaces[dedup_key] = match.group(0)
+                    
+                    rooms.append(ExtractedRoom(
+                        name_raw=match.group(0),
+                        name_normalized=room_type_key,
+                        surface=surface,
+                        room_type=room_type_enum,
+                        is_exterior=is_exterior,
+                        source=source,
+                        confidence=0.7,
+                    ))
+                except (ValueError, AttributeError):
+                    pass
+        
+        # Extraire la surface habitable totale depuis le texte OCR
+        # Pattern: "SURFACE HABITABLE TOTALE 63.00 m" ou similaire
+        total_pattern = r'SURFACE\s*HABITABLE\s*TOTALE\s*(\d+[\.,]\d+)'
+        total_match = re.search(total_pattern, text, re.IGNORECASE)
+        total_surface = None
+        if total_match:
+            try:
+                total_surface = float(total_match.group(1).replace(',', '.'))
+            except ValueError:
+                pass
+        
+        return rooms, total_surface
+
+    def _clean_ocr_text(self, text: str) -> str:
+        """
+        Nettoie les erreurs OCR courantes avant extraction.
+        
+        Transformations:
+        - 'm?' -> 'm²' (m² mal reconnu)
+        - 'PI.' -> 'Pl.' (P minuscule -> P majuscule)
+        - 'chamerez' -> 'Chambre'
+        - 'Stjour' -> 'Séjour'
+        - Supprime caractères parasites: |, }, =, \
+        """
+        if not text:
+            return text
+        
+        # Remplacements courants d'erreurs OCR
+        text = text.replace('m?', 'm²')
+        text = text.replace('PI.', 'Pl.')
+        text = text.replace('Stjour', 'Séjour')
+        text = text.replace('stjour', 'séjour')
+        text = text.replace('chamerez', 'Chambre')
+        text = text.replace('SDE+wC', 'SDE WC')
+        text = text.replace('SDEwC', 'SDE WC')
+        text = text.replace("'", "'")  # apostrophe curly -> droit
+        text = text.replace("'", "'")  # otro apostrophe
+        text = text.replace('D / } =+', '')
+        
+        # Supprime caractères parasites OCR
+        text = re.sub(r'[|{}\\]', ' ', text)
+        text = re.sub(r'\s+', ' ', text)
+        
+        return text
     def _merge_rooms(self, primary, secondary):
         """
         Fusionne deux listes. Primary a priorité.
@@ -839,6 +1021,67 @@ class SuperExtractor:
         cleaned = re.sub(r"\s+", " ", cleaned).strip()
         
         return cleaned
+
+    def _infer_missing_bedroom(self, result: 'ExtractionResult') -> 'ExtractionResult':
+        """
+        If OCR missed a bedroom (common when scan quality is poor on one cell),
+        infer it from the surface gap between declared and calculated habitable.
+
+        Rules (all must hold):
+        - declared living_space > 0
+        - gap is in bedroom range [5.0, 40.0] m²
+        - we have at least one bedroom already (chambre / chambre_1)
+        - we do NOT already have a chambre_2 (or higher matching the gap)
+        - gap matches no other room type already present (avoid double-counting)
+        """
+        if result.living_space <= 0:
+            return result
+
+        interior = [r for r in result.rooms if not r.is_exterior and not r.is_composite]
+        calc = round(sum(r.surface for r in interior), 2)
+        gap = round(result.living_space - calc, 2)
+
+        if not (5.0 <= gap <= 40.0):
+            return result
+
+        # Check we have at least one bedroom
+        bedrooms = [r for r in result.rooms if r.room_type == RoomType.BEDROOM]
+        if not bedrooms:
+            return result
+
+        # Find what number the next bedroom should be
+        bedroom_numbers = sorted([r.room_number for r in bedrooms if r.room_number])
+        next_num = (max(bedroom_numbers) + 1) if bedroom_numbers else 2
+        inferred_name = f"chambre_{next_num}"
+
+        # Make sure this bedroom doesn't already exist
+        existing_names = {r.name_normalized for r in result.rooms}
+        if inferred_name in existing_names:
+            return result
+
+        # Make sure gap doesn't match a surface already present (avoid double-count)
+        existing_surfaces = {round(r.surface, 2) for r in interior}
+        if gap in existing_surfaces:
+            return result
+
+        logger.info(
+            f"  🔧 Inférence: {inferred_name}={gap}m² "
+            f"(surface déclarée={result.living_space}, calc={calc})"
+        )
+
+        inferred_room = ExtractedRoom(
+            name_raw=f"Chambre {next_num} (inféré)",
+            name_normalized=inferred_name,
+            surface=gap,
+            room_type=RoomType.BEDROOM,
+            is_exterior=False,
+            room_number=next_num,
+            source="inferred",
+            confidence=0.6,
+        )
+        result.rooms.append(inferred_room)
+        result.sources[inferred_name] = "inferred"
+        return result
 
     def _detect_typology(self, rooms):
         """
