@@ -679,6 +679,66 @@ class HybridExtractor:
             logger.error(f"EasyOCR echoue: {e}")
             raise ExtractionError(f"Extraction Tesseract echouee: {e}")
     
+    def _auto_install_tesseract(self) -> bool:
+        """
+        Installe automatiquement Tesseract si les donnees tessdata sont presentes
+        mais le binaire est manquant. Utilise le script install_tesseract.py.
+        
+        Returns:
+            True si l'installation a reussi, False sinon
+        """
+        import subprocess
+        import sys
+        import os
+        
+        logger.info("Demarrage installation automatique de Tesseract...")
+        
+        # Verifier que le script d'installation existe
+        project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        install_script = os.path.join(project_root, 'install_tesseract.py')
+        
+        if not os.path.exists(install_script):
+            logger.warning(f"Script d'installation non trouve: {install_script}")
+            return False
+        
+        try:
+            # Executer le script d'installation en mode automatique (option 1 pour Windows)
+            if sys.platform == "win32":
+                # Essayer le telechargement automatique
+                logger.info("Execution du script d'installation Tesseract (mode automatique)...")
+                result = subprocess.run(
+                    [sys.executable, install_script],
+                    input="1\n",  # Choix 1: Telechargement automatique
+                    capture_output=True,
+                    text=True,
+                    timeout=300  # 5 minutes timeout pour le telechargement
+                )
+                
+                if result.returncode == 0:
+                    logger.info("Installation Tesseract terminee")
+                    return True
+                else:
+                    logger.warning(f"Echec installation Tesseract: {result.stderr}")
+                    return False
+            else:
+                # Pour Linux/Mac, essayer installation systeme
+                logger.info("Installation Tesseract sur systeme non-Windows...")
+                result = subprocess.run(
+                    [sys.executable, install_script],
+                    input="2\n",  # Choix 2: Installation systeme
+                    capture_output=True,
+                    text=True,
+                    timeout=120
+                )
+                return result.returncode == 0
+                
+        except subprocess.TimeoutExpired:
+            logger.warning("Installation Tesseract trop longue, annulation")
+            return False
+        except Exception as e:
+            logger.warning(f"Erreur lors de l'installation automatique de Tesseract: {e}")
+            return False
+    
     def _is_tesseract_available(self) -> bool:
         """Verifie si Tesseract est correctement configure."""
         try:
@@ -733,6 +793,21 @@ class HybridExtractor:
                         return True
                 except FileNotFoundError:
                     logger.warning("Dossier tessdata local trouve mais Tesseract binaire non installe")
+                    # ESSAYER INSTALLATION AUTO!
+                    if self._auto_install_tesseract():
+                        # Re-verifier apres installation
+                        try:
+                            result = subprocess.run(
+                                ['tesseract', '--version'],
+                                capture_output=True,
+                                text=True,
+                                timeout=5
+                            )
+                            if result.returncode == 0:
+                                logger.info("Tesseract installe automatiquement avec succes!")
+                                return True
+                        except:
+                            pass
                     return False
                 except Exception as e:
                     logger.warning(f"Erreur verification tesseract: {e}")

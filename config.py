@@ -10,6 +10,10 @@ import tempfile
 from pathlib import Path
 from typing import Optional
 
+# Chargement automatique du fichier .env
+from dotenv import load_dotenv
+load_dotenv()  # Charge les variables depuis le fichier .env a la racine du projet
+
 from pydantic import BaseModel, field_validator
 
 logger = logging.getLogger(__name__)
@@ -80,13 +84,11 @@ class AppConfig(BaseModel):
     @classmethod
     def check_api_key_required(cls, v):
         """Verifie que la cle API Claude est fournie."""
-        if not v or not v.strip():
-            raise ValueError(
-                "La cle API Claude est obligatoire. "
-                "Configurez-la via la variable d'environnement ARCHI_CLAUDE_API_KEY "
-                "ou creez un fichier .env a la racine du projet."
-            )
-        return v.strip()
+        # La cle API est optionnelle - on peut utiliser Tesseract sans elle
+        if v:
+            return v.strip()
+        # Retourner une chaine vide si non fournie - l'app fonctionnera avec Tesseract
+        return ""
 
 
 # ============================================================
@@ -246,14 +248,15 @@ class SecretsManager:
             La cle API Claude
             
         Raises:
-            ValueError: Si la cle n'est pas configuree
+            ValueError: Si la cle n'est pas configuree (quand on essaie de l'utiliser)
         """
         secret = self._config.claude_api_key
         if not secret:
-            logger.error("Tentative d'acces a la cle API Claude non configuree")
+            logger.warning("Cle API Claude non configuree - utilisation de Tesseract uniquement")
             raise ValueError(
                 "La cle API Claude n'est pas configuree. "
-                "Definissez ARCHI_CLAUDE_API_KEY dans votre fichier .env"
+                "Definissez ARCHI_CLAUDE_API_KEY dans votre fichier .env "
+                "ou utilisez Tesseract OCR sans cle API."
             )
         
         # Audit log (sans reveler le secret complet)
@@ -290,12 +293,11 @@ class SecretsManager:
                 missing.append(secret_name)
         
         if missing:
-            error_msg = (
-                f"Secrets manquants pour le niveau '{required_level}': {missing}. "
-                f"Veuillez configurer les variables d'environnement: {', '.join(missing)}"
-            )
-            logger.error(f"[AUDIT] ECHEC de validation des secrets: {missing}")
-            raise ValueError(error_msg)
+            # Ne pas lever d'erreur, juste logger un warning
+            # L'app peut fonctionner avec Tesseract uniquement
+            logger.warning(f"Secrets manquants pour le niveau '{required_level}': {missing}")
+            logger.warning("Vous pouvez utiliser Tesseract OCR sans cle API Claude.")
+            return False
         
         logger.info(f"[AUDIT] Validation des secrets reussie pour le niveau '{required_level}'")
         return True

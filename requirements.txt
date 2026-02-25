@@ -24,6 +24,7 @@ streamlit>=1.28.0
 streamlit-cropper>=0.2.0
 
 # === Utilitaires ===
+python-dotenv>=1.0.0        # Chargement automatique du fichier .env
 pdf2image>=1.16.0        # Conversion PDF -> Images (Windows-compatible)
 python-magic>=0.4.27     # Detection de type de fichier
 
