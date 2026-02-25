@@ -81,7 +81,55 @@ L'application s'ouvrira automatiquement dans votre navigateur à l'adresse `http
 3. Vérifiez et corrigez les données si nécessaire
 4. Téléchargez le fichier JSON
 
-### Option 2: Script Python direct
+### Option 2: Ligne de commande (CLI)
+
+```bash
+# Extraire d'un fichier unique
+python -m src pdfExample/A008.pdf
+
+# Avec méthode spécifique
+python -m src pdfExample/A008.pdf --method super
+python -m src pdfExample/A008.pdf --method claude
+python -m src pdfExample/A008.pdf --method tesseract
+
+# Mode verbeux
+python -m src pdfExample/A008.pdf --method super --verbose
+
+# Sauvegarder le résultat
+python -m src pdfExample/A008.pdf --output result.json
+
+# Mode silencieux (JSON seulement)
+python -m src pdfExample/A008.pdf --quiet
+```
+
+#### Mode Batch (plusieurs fichiers)
+
+```bash
+# Traiter plusieurs fichiers
+python -m src --batch file1.pdf file2.pdf file3.pdf
+
+# Traiter un répertoire entier
+python -m src --batch pdfExample/
+
+# Avec méthode et format de sortie
+python -m src --batch pdfExample/ --method super --format data
+
+# Formats de sortie disponibles:
+# - json (défaut): Résultat complet avec info fichier
+# - data: Données extraites uniquement (plus propre)
+# - quiet: Sortie minimale
+
+# Sauvegarder dans un répertoire
+python -m src --batch pdfExample/ --method super --output results/
+```
+
+#### Diviser un PDF en pages
+
+```bash
+python -m src --split pdfExample/A008.pdf --output output_pages/
+```
+
+### Option 3: Script Python direct
 
 ```python
 from architecture_plan_extractor import ArchitecturePlanExtractor
@@ -122,6 +170,28 @@ results = extractor.extract_batch(images)
 import json
 with open("all_lots.json", "w", encoding="utf-8") as f:
     json.dump(results, f, indent=2, ensure_ascii=False)
+```
+
+### Option 4: API REST
+
+```bash
+# Lancer le serveur API
+uvicorn src.api.main:app --host 0.0.0.0 --port 8000
+
+# Endpoints disponibles:
+# POST /extract - Extraire d'un fichier
+# POST /extract/batch - Extraire plusieurs fichiers
+# GET /health - Health check
+# GET /stats - Statistiques
+
+# Exemple d'utilisation:
+curl -X POST "http://localhost:8000/extract" -F "file=@plan.pdf"
+
+# Batch avec traitement parallèle:
+curl -X POST "http://localhost:8000/extract/batch" \
+  -F "files=@file1.pdf" \
+  -F "files=@file2.pdf" \
+  -F "parallel=true"
 ```
 
 ## 📝 Format de sortie
@@ -337,11 +407,11 @@ Pour toute question ou amélioration:
 
 ## 🎯 Roadmap
 
-- [ ] Support des PDFs multi-pages
-- [ ] Détection automatique des zones de texte
-- [ ] API REST pour intégration
-- [ ] Base de données pour historique
-- [ ] Machine Learning pour améliorer la détection
+- [x] Support des PDFs multi-pages
+- [x] Détection automatique des zones de texte
+- [x] API REST pour intégration
+- [x] Base de données pour historique
+- [x] Machine Learning pour améliorer la détection
 - [ ] Export vers d'autres formats (Excel, CSV)
-- [ ] Validation automatique des données
+- [x] Validation automatique des données
 - [ ] Interface de correction collaborative

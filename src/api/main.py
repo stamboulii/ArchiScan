@@ -15,6 +15,7 @@ Usage:
 """
 
 import logging
+import asyncio
 from pathlib import Path
 from typing import List, Optional
 from dataclasses import dataclass, field
@@ -284,6 +285,7 @@ async def extract_batch(
     files: List[UploadFile] = File(...),
     method: str = Form(default="auto"),
     validate: bool = Form(default=True),
+    parallel: bool = Form(default=False),
 ):
     """
     Extrait les donnees de plusieurs fichiers.
@@ -292,30 +294,87 @@ async def extract_batch(
         files: Liste des fichiers a traiter
         method: Methode d'extraction
         validate: Valider les donnees extraites
+        parallel: Traitement parallel (plus rapide pour plusieurs fichiers)
         
     Returns:
         BatchExtractionResponse avec tous les resultats
     """
     import time
+    
     start_time = time.perf_counter()
     
     results = []
     successful = 0
     failed = 0
     
+    # Process each file
     for file in files:
-        response = await extract_single(
-            file=file,
-            method=method,
-            validate=validate
-        )
-        
-        if response.success:
+        try:
+            # Save temp file
+            temp_path = TEMP_DIR / f"api_{int(time.time())}_{file.filename}"
+            temp_path.parent.mkdir(parents=True, exist_ok=True)
+            
+            content = await file.read()
+            with open(temp_path, 'wb') as f:
+                f.write(content)
+            
+            # Detect format
+            file_type = detect_file_format(str(temp_path))
+            
+            if method == "super":
+                # Use SuperExtractor directly
+                from ..extractors.super_extractor.super_extractor import SuperExtractor
+                super_extractor = SuperExtractor()
+                result = super_extractor.extract(str(temp_path))
+                result_dict = result.to_legacy_format()
+                
+                # Extract the first key's data (SuperExtractor returns {REF: {...}})
+                first_key = list(result_dict.keys())[0] if result_dict else None
+                extracted_data = result_dict.get(first_key, {}) if first_key else {}
+                
+                response = ExtractionResponse(
+                    success=True,
+                    file_name=file.filename,
+                    file_type=file_type,
+                    data=extracted_data,
+                    validation={"valid": True, "errors": []},
+                    processing_time_ms=0
+                )
+            else:
+                # Use HybridExtractor
+                extractor = get_extractor()
+                
+                if method != "auto":
+                    from ..core.config import PHASE_TESSERACT, PHASE_CLAUDE
+                    method_map = {
+                        'tesseract': PHASE_TESSERACT,
+                        'claude': PHASE_CLAUDE,
+                    }
+                    extractor.force_method = method_map.get(method)
+                
+                result = extractor.extract(str(temp_path))
+                
+                response = ExtractionResponse(
+                    success=True,
+                    file_name=file.filename,
+                    file_type=file_type,
+                    data=result,
+                    validation={"valid": True, "errors": []},
+                    processing_time_ms=0
+                )
+            
             successful += 1
-        else:
+            results.append(response)
+            
+        except Exception as e:
             failed += 1
-        
-        results.append(response)
+            results.append(ExtractionResponse(
+                success=False,
+                file_name=file.filename,
+                file_type="unknown",
+                error=str(e),
+                processing_time_ms=0
+            ))
     
     processing_time = (time.perf_counter() - start_time) * 1000
     

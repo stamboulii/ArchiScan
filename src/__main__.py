@@ -56,6 +56,195 @@ def split_pdf(input_pdf: str, output_dir: str, verbose: bool = False):
     print(f"[OK] Extraction terminee: {page_count} pages creees dans '{output_path}'")
 
 
+def batch_process_files(paths: list, args):
+    """Traiter plusieurs fichiers en mode batch.
+    
+    Args:
+        paths: Liste de fichiers ou repertoires a traiter
+        args: Arguments parses
+    """
+    import time
+    from pathlib import Path
+    
+    # Collecter tous les fichiers a traiter
+    files_to_process = []
+    
+    for path_str in paths:
+        path = Path(path_str)
+        if path.is_dir():
+            # Ajouter tous les fichiers PDF/images du repertoire
+            for ext in ['*.pdf', '*.png', '*.jpg', '*.jpeg']:
+                files_to_process.extend(path.glob(ext))
+        elif path.is_file():
+            files_to_process.append(path)
+    
+    if not files_to_process:
+        print("Erreur: Aucun fichier a traiter", file=sys.stderr)
+        sys.exit(1)
+    
+    # Configuration du logging
+    root_logger = logging.getLogger()
+    for handler in root_logger.handlers[:]:
+        root_logger.removeHandler(handler)
+    
+    if args.verbose:
+        handler = logging.StreamHandler(sys.stdout)
+        handler.setFormatter(logging.Formatter('%(message)s'))
+        root_logger.addHandler(handler)
+        root_logger.setLevel(logging.INFO)
+    elif args.quiet:
+        root_logger.addHandler(logging.NullHandler())
+        root_logger.setLevel(logging.CRITICAL)
+    else:
+        handler = logging.StreamHandler(sys.stdout)
+        handler.setFormatter(logging.Formatter('%(message)s'))
+        root_logger.setLevel(logging.WARNING)
+    
+    # Determiner le repertoire de sortie
+    output_dir = None
+    if args.output:
+        output_dir = Path(args.output)
+        output_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Importer l'extracteur
+    try:
+        from .extractors.hybrid_extractor import HybridExtractor
+        from .extractors.super_extractor.super_extractor import SuperExtractor
+        
+        extractor = HybridExtractor()
+        super_extractor = SuperExtractor()
+        
+        if args.method == 'super':
+            method = 'super'
+        else:
+            method = args.method
+            if args.method != 'auto':
+                from .core.config import (
+                    PHASE_TESSERACT,
+                    PHASE_CLAUDE,
+                    PHASE_AUTO,
+                )
+                method_map = {
+                    'tesseract': PHASE_TESSERACT,
+                    'claude': PHASE_CLAUDE,
+                    'auto': PHASE_AUTO,
+                }
+                extractor.force_method = method_map.get(args.method)
+    except ImportError as e:
+        print(f"Erreur d'importation: {e}", file=sys.stderr)
+        print("Assurez-vous que les dependencies sont installees.", file=sys.stderr)
+        sys.exit(1)
+    
+    # Traiter chaque fichier
+    results = []
+    start_time = time.time()
+    
+    print(f"[BATCH] Traitement de {len(files_to_process)} fichier(s)...")
+    
+    for i, file_path in enumerate(files_to_process, 1):
+        if not args.quiet:
+            print(f"  [{i}/{len(files_to_process)}] {file_path.name}...", end=' ', flush=True)
+        
+        try:
+            if args.method == 'super':
+                # Use SuperExtractor
+                is_multipage = False
+                if str(file_path).lower().endswith('.pdf'):
+                    try:
+                        import fitz
+                        doc = fitz.open(str(file_path))
+                        is_multipage = len(doc) > 1
+                        doc.close()
+                    except:
+                        pass
+                
+                if is_multipage:
+                    all_results = super_extractor.extract_all_pages(str(file_path))
+                    combined = {}
+                    for ref, result in all_results.items():
+                        combined.update(result.to_legacy_format(include_raw_text=False))
+                    file_result = combined
+                else:
+                    result = super_extractor.extract(str(file_path))
+                    file_result = result.to_legacy_format(include_raw_text=False)
+            else:
+                # Use HybridExtractor
+                file_result = extractor.extract(str(file_path))
+            
+            result_entry = {
+                'file': str(file_path),
+                'success': True,
+                'data': file_result
+            }
+            
+            if not args.quiet:
+                print("OK")
+            
+            # Sauvegarder si output specifie
+            if output_dir:
+                output_file = output_dir / f"{file_path.stem}.json"
+                with open(output_file, 'w', encoding='utf-8') as f:
+                    json.dump(file_result, f, indent=2, ensure_ascii=False)
+        
+        except Exception as e:
+            result_entry = {
+                'file': str(file_path),
+                'success': False,
+                'error': str(e)
+            }
+            
+            if not args.quiet:
+                print(f"ERREUR: {e}")
+        
+        results.append(result_entry)
+    
+    total_time = time.time() - start_time
+    
+    # Resumer
+    successful = sum(1 for r in results if r['success'])
+    failed = len(results) - successful
+    
+    if not args.quiet:
+        print(f"\n[BATCH] Termine!")
+        print(f"  Total: {len(results)} fichier(s)")
+        print(f"  Reussis: {successful}")
+        print(f"  Echecs: {failed}")
+        print(f"  Temps: {total_time:.2f}s")
+    
+    # Sauvegarder le rapport JSON
+    if output_dir:
+        report = {
+            'summary': {
+                'total': len(results),
+                'successful': successful,
+                'failed': failed,
+                'processing_time_seconds': total_time
+            },
+            'results': results
+        }
+        report_file = output_dir / 'batch_report.json'
+        with open(report_file, 'w', encoding='utf-8') as f:
+            json.dump(report, f, indent=2, ensure_ascii=False)
+        
+        if not args.quiet:
+            print(f"  Rapport: {report_file}")
+    
+    # Afficher le JSON selon le format specifie
+    if args.format == 'data':
+        # Afficher uniquement les donnees extraites
+        for r in results:
+            if r.get('success'):
+                print(json.dumps(r.get('data', {}), indent=2, ensure_ascii=False))
+    elif args.format == 'quiet':
+        # Format minimal
+        print(json.dumps(results, indent=2, ensure_ascii=False))
+    elif not args.output:
+        # Pas de fichier de sortie specifie, afficher a l'ecran
+        print(json.dumps(results, indent=2, ensure_ascii=False))
+    elif args.quiet:
+        print(json.dumps(results, indent=2, ensure_ascii=False))
+
+
 def main():
     """Point d'entree principal."""
     parser = argparse.ArgumentParser(
@@ -68,6 +257,8 @@ Exemples:
     python -m src pdfExample/A008.pdf --method super -v
     python -m src --help
     python -m src --split pdfExample/A008.pdf --output output_pages
+    python -m src --batch dir_with_pdfs/ --method super
+    python -m src --batch file1.pdf file2.pdf --output results/
         """
     )
     
@@ -76,6 +267,21 @@ Exemples:
         '--split', '-s',
         action='store_true',
         help='Diviser le PDF en pages individuelles'
+    )
+    
+    # Batch mode flag
+    parser.add_argument(
+        '--batch', '-b',
+        nargs='+',
+        help='Traiter plusieurs fichiers ou un repertoire (batch mode)'
+    )
+    
+    # Output format for batch mode
+    parser.add_argument(
+        '--format', '-f',
+        choices=['json', 'data', 'quiet'],
+        default='json',
+        help='Format de sortie: json (complet), data (donnees uniquement), quiet (minimal)'
     )
     
     # For split mode: input PDF (optional positional)
@@ -102,6 +308,11 @@ Exemples:
     )
     
     args = parser.parse_args()
+    
+    # Handle batch mode
+    if args.batch:
+        batch_process_files(args.batch, args)
+        sys.exit(0)
     
     # Handle split mode with flag
     if args.split:
