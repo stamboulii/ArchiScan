@@ -129,6 +129,31 @@ python -m src --batch pdfExample/ --method super --output results/
 python -m src --split pdfExample/A008.pdf --output output_pages/
 ```
 
+#### Diviser un PDF par maison/lot
+
+Cette fonctionnalité permet de diviser un PDF multi-pages en regroupant les pages par maison/lot. Les pages ayant la même référence (ex: M01-RDC, M01-R+1) seront regroupées dans un seul fichier PDF.
+
+```bash
+# Grouper les pages par maison/lot (mêmes références ensemble)
+python -m src --split pdfExample/Multipages.pdf --output output_houses/ --by-house
+
+# Avec mode verbeux pour voir le regroupement
+python -m src --split pdfExample/Multipages.pdf --output output_houses/ --by-house --verbose
+```
+
+**Exemple de résultat:**
+- Un PDF avec 10 pages (M01-RDC, M01-R+1, M03-RDC, M03-R+1, etc.) sera splité en:
+  - `M01.pdf` (2 pages: RDC + R+1)
+  - `M03.pdf` (2 pages: RDC + R+1)
+  - `M04.pdf` (2 pages: RDC + R+1)
+  - etc.
+
+**Options disponibles:**
+- `--split`, `-s`: Activer le mode split
+- `--by-house`, `-bh`: Grouper les pages par maison/lot
+- `--output`, `-o`: Répertoire de sortie
+- `--verbose`, `-v`: Afficher les détails du regroupement
+
 ### Option 3: Script Python direct
 
 ```python

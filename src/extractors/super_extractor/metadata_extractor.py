@@ -42,6 +42,10 @@ class MetadataExtractor:
         # Numeric floor codes: "Etage 001", "Etage 002" — keep as-is
         (r"\bEtage\b.{0,300}?\b(0\d{2})\b", lambda m: m.group(1)),  # "Etage ... 001"
         (r"\bEtage\s+(\d{3})\b", lambda m: m.group(1)),
+        # Format NIV: "NIV 01", "NIV 02", etc. - common in French architectural plans
+        (r"\bNIV\s*(\d{2,3})\b", lambda m: f"R+{int(m.group(1))-1}" if int(m.group(1)) > 0 else "RDC"),
+        # Format français avec °: "4°ETAGE", "4° ETAGE", "4e ETAGE"
+        (r"\b(\d+)°?\s*ETAGE\b", lambda m: f"R+{m.group(1)}"),
         # Combinaison RDC + ETAGE (indique une maison avec plusieurs niveaux)
         (r"REZ\s*DE\s*CHAUSSEE\s*(ETAGE|\+|/)\s*ETAGE", "RDC+1"),
         (r"RDC\s*(ETAGE|\+|/)\s*ETAGE", "RDC+1"),
@@ -67,8 +71,12 @@ class MetadataExtractor:
     ]
 
     BUILDING_PATTERNS = [
+        # Standalone building codes like "B2" in a list (higher priority)
+        r"\b([A-Z]\d?)\s*-\d{3,4}\b",  # B2-403 -> extract B2
         r"BATIMENT\s*[:\s]*([A-Z]\d?)",
         r"B[ÂA]T\.?\s*[:\s]*([A-Z]\d?)",
+        r"\bBATIMENT\s+([A-Z]\d?)\b",  # BATIMENT B2
+        r"\b([A-Z]\d?)\b",  # Fallback: any single letter + digit (last resort)
     ]
 
     PROMOTER_SIGNATURES = {
@@ -142,7 +150,7 @@ class MetadataExtractor:
             "reference": self._extract_first(full_text, self.REF_PATTERNS,
                                               reference_hint or "UNKNOWN"),
             "floor": self._extract_floor(full_text),
-            "building": self._extract_first(full_text, self.BUILDING_PATTERNS, ""),
+            "building": self._extract_building(full_text),
             "promoter": self._detect_promoter(full_text),
             "living_space": self._extract_surface(full_text, self.LIVING_SPACE_PATTERNS),
             "annex_space": self._extract_surface(full_text, self.ANNEX_SPACE_PATTERNS),
@@ -154,23 +162,70 @@ class MetadataExtractor:
         }
 
     PROGRAM_PATTERNS = [
+        # Direct patterns for common residence names - case insensitive
+        r"(?:Square|Résidence|Domaine|Les| programme)\s+[A-Za-zÀ-ÿ'\-\s]{3,30}",
         r"(?:Résidence|Domaine|Les?|Le|La|Villa|Programme)\s+[A-Z][A-Za-zÀ-ÿ'\s\-]{3,40}",
+        # Also try to find ensemble immobilier as fallback
+        r"Ensemble\s+Immobilier\s+[A-Za-zÀ-ÿ'\-\s]{3,30}",
     ]
 
     def _extract_program(self, text: str) -> str:
         """Extract program/residence name from text."""
+        # Normalize multiple spaces first
+        text = re.sub(r'\s+', ' ', text)
+        
+        # PRIORITY 1: Look for ÎLOT/ILOT first (most specific for this type of PDF)
+        # Note: Due to encoding issues, Î might appear as 'l' in the text
+        if 'ÎLOT' in text.upper() or 'ILOT' in text.upper() or 'LOT' in text.upper():
+            # Try to find the actual pattern - look for "lot" or "Lot" or "ILOT"
+            idx = -1
+            for pattern in ['ÎLOT', 'ILOT', 'LOT']:
+                potential_idx = text.upper().find(pattern)
+                if potential_idx >= 0:
+                    idx = potential_idx
+                    break
+            if idx >= 0:
+                # Get up to 22 chars after keyword (shorter to avoid extra text)
+                segment = text[idx:idx+22]
+                # Stop at common delimiters
+                segment = re.split(
+                    r'\s+(?:TYPE|NUMERO|BATIMENT|NOTA|SURFACES|LEGENDE|PLAN|ACCESSIBILITE|NIVEAU|PORTE|BOITE|CLOTURE)\b', 
+                    segment, flags=re.IGNORECASE)[0].strip()
+                if len(segment) > 3:
+                    return segment
+        
+        # Try explicit known patterns first
         for p in self.PROGRAM_PATTERNS:
-            m = re.search(p, text)
+            m = re.search(p, text, re.IGNORECASE)
             if m:
                 name = m.group(0).strip()
-                # Trim at street/address keywords
                 name = re.split(
                     r'\s+(?:Rue|Avenue|Boulevard|All[ée]e|Impasse|Place|Chemin|Route)\b',
                     name, flags=re.IGNORECASE)[0].strip()
-                # Filter out false positives
-                if len(name) > 8 and not any(w in name.upper() for w in
-                        ['SURFACE', 'PLAN', 'ETAGE', 'TOTAL', 'TYPE']):
+                if len(name) > 5 and not any(w in name.upper() for w in
+                        ['SURFACE', 'PLAN', 'ETAGE', 'TOTAL', 'TYPE', 'NOTA', 'NUMERO', 'BATIMENT']):
                     return name
+        
+        # Fallback: look for specific keywords in the text
+        # Order matters - prioritize more specific terms
+        keywords = ['SQUARE', 'RÉSIDENCE', 'DOMAINE', 'VILLA', 'ÎLOT', 'LOT', 'MAISON']
+        for kw in keywords:
+            if kw in text.upper():
+                # Find the keyword and extract surrounding text
+                idx = text.upper().find(kw)
+                # Get up to 20 chars after keyword
+                segment = text[idx:idx+20]
+                # Stop at common delimiters
+                segment = re.split(
+                    r'\s+(?:TYPE|NUMERO|BATIMENT|NOTA|SURFACES|LEGENDE|PLAN|ACCESSIBILITE|NIVEAU)\b', 
+                    segment, flags=re.IGNORECASE)[0].strip()
+                if len(segment) > 5:
+                    return segment
+        
+        # Try ENSEMBLE IMMOBILIER as last resort
+        if 'ENSEMBLE IMMOBILIER' in text.upper():
+            return 'Ensemble Immobilier'
+        
         return ""
 
     def _extract_first(self, text, patterns, default):
@@ -192,12 +247,51 @@ class MetadataExtractor:
                     return ref
         return default
 
+    def _extract_building(self, text):
+        """Extract building code without using blacklist (to allow B1, B2, etc.)"""
+        for p in self.BUILDING_PATTERNS:
+            m = re.search(p, text, re.IGNORECASE)
+            if m:
+                ref = m.group(1).strip()
+                ref = re.sub(r'\s+', '', ref)
+                # Building codes are typically single letter + optional digit (B2, A1, etc.)
+                if re.match(r"^[A-Z]\d?$", ref):
+                    return ref
+        return ""
+
     def _extract_floor(self, text):
+        # First try to get all floors (for multi-floor PDFs like NIV 01 + NIV 02)
+        all_floors = self._extract_all_floors(text)
+        if len(all_floors) > 1:
+            # Multiple floors found - return comma-separated for later processing
+            return ",".join(all_floors)
+        # Single floor or no floors - return the first match
         for pattern, val in self.FLOOR_PATTERNS:
             m = re.search(pattern, text, re.IGNORECASE)
             if m:
                 return val(m) if callable(val) else val
         return ""
+
+    def _extract_all_floors(self, text):
+        """Extract all floor references from text (useful for multi-floor PDFs)."""
+        floors = []
+        seen = set()
+        for pattern, val in self.FLOOR_PATTERNS:
+            for m in re.finditer(pattern, text, re.IGNORECASE):
+                floor_val = val(m) if callable(val) else val
+                if floor_val and floor_val not in seen:
+                    floors.append(floor_val)
+                    seen.add(floor_val)
+        # Sort floors: RDC first, then R+1, R+2, etc.
+        def floor_sort_key(f):
+            if f == "RDC":
+                return (0, 0)
+            m = re.match(r"R\+(\d+)", f)
+            if m:
+                return (1, int(m.group(1)))
+            return (2, f)
+        floors.sort(key=floor_sort_key)
+        return floors
 
     def _detect_promoter(self, text):
         for pattern, name in self.PROMOTER_SIGNATURES.items():
@@ -216,10 +310,80 @@ class MetadataExtractor:
         return 0.0
 
     def _extract_address(self, text):
+        # Look for postal code + city format - very flexible pattern
+        # Handle encoding issues with special characters
+        
+        # Pattern 1: French postal code format with space: "29 200" or "77100"
+        # Handle both "XX XXX" (with space) and "XXXXX" (no space) formats
+        # Also handle "CITY POSTALCODE" format (MEAUX 77100)
+        m = re.search(r'(\d{2,2}\s*\d{3,3}|\d{5,5})\s+(\w+)', text)
+        if m:
+            postal = m.group(1).replace(' ', '')  # Remove any spaces in postal code
+            city = m.group(2)
+            # Make sure it's a valid postal code (5 digits after removing spaces)
+            if postal.isdigit() and len(postal) == 5:
+                # Skip if city looks like noise (NOTA, RP, etc.)
+                if city.upper() in ['NOTA', 'RP', 'JUIN', 'DATE', 'TYPE', 'NUMERO', 'BATIMENT', 'SURFACES', 'LEGENDE']:
+                    pass  # Will try other patterns
+                else:
+                    # Format as "XXXXX CITY" - preserve original format (with or without space)
+                    # Check if original had space
+                    if ' ' in m.group(1):
+                        return f"{postal[:2]} {postal[2:]} {city}"  # "29 200 BREST"
+                    else:
+                        return f"{postal} {city}"  # "77100 MEAUX"
+        
+        # Pattern 2: Look for any 5 digits with optional space followed by city name
+        m = re.search(r'(\d{5,5})\s+(\w+)', text)
+        if m:
+            postal = m.group(1)
+            city = m.group(2)
+            if postal.isdigit() and len(postal) == 5:
+                if city.upper() not in ['NOTA', 'RP', 'JUIN', 'DATE', 'TYPE', 'NUMERO', 'BATIMENT', 'SURFACES', 'LEGENDE']:
+                    return f"{postal} {city}"
+        
+        # Pattern 3: Look for "CITY POSTALCODE" format (MEAUX 77100)
+        m = re.search(r'\b(MEAUX|Paris|Lyon|Marseille|Brest|Bordeaux|Toulouse|Nantes|Nice|Lille|Strasbourg|Montpellier|Rennes|Grenoble|Dijon|Angers|Le Havre|Villeurbanne|Aix en Provence|Clermont-Ferrand|Saint-Étienne|Le Mans|Tours|Amiens|Mulhouse|Perpignan|Boulogne-Billancourt|Caen|Orléans|Limoges|Dunkerque|Saint-Denis|Saint-Paul|Saint-Louis|Pont-à-Mousson)\s+(\d{5,5})\b', text, re.IGNORECASE)
+        if m:
+            city = m.group(1)
+            postal = m.group(2)
+            return f"{postal} {city}"
+        
+        # Pattern 4: Look for any French city name followed by 5-digit postal code
+        # Common French city names
+        french_cities = r"MEAUX|Paris|Lyon|Marseille|Brest|Bordeaux|Toulouse|Nantes|Nice|Lille|Strasbourg|Montpellier|Rennes|Grenoble|Dijon|Angers|Le Havre|Villeurbanne|Aix|Clermont|Saint-Étienne|Le Mans|Tours|Amiens|Mulhouse|Perpignan|Boulogne|Caen|Orléans|Limoges|Dunkerque|Saint-Denis|Saint-Paul|Saint-Louis|Pont-à-Mousson"
+        m = re.search(rf'\b({french_cities})\s+(\d{{5,5}})\b', text, re.IGNORECASE)
+        if m:
+            city = m.group(1)
+            postal = m.group(2)
+            return f"{postal} {city}"
+        
+        # Pattern 5: Look after PLAN DE LOCALISATION header
+        m = re.search(r'PLAN DE LOCALISATION\s*\n?\s*(\d{2,2}\s*\d{3,3}|\d{5,5})\s+(\w+)', text, re.IGNORECASE)
+        if m:
+            postal = m.group(1).replace(' ', '')
+            city = m.group(2)
+            if ' ' in m.group(1):
+                return f"{postal[:2]} {postal[2:]} {city}"
+            else:
+                return f"{postal} {city}"
+        
+        # Pattern 6: Handle street address with postal code and city
+        # Look for "24 Avenue du ... MEAUX 77100" pattern
         m = re.search(
-            r"(\d+[\s\-]?\w*\s+(?:rue|avenue|boulevard|quai|place|impasse)"
-            r"[^,\n]{3,50})", text, re.IGNORECASE)
-        return m.group(1).strip() if m else ""
+            r'(\d+)\s+(Avenue|Rue|Boulevard|Quai|Place|Impasse|All[ée]e|Chemin|Route)[^,\n]{0,50}', 
+            text, re.IGNORECASE)
+        if m:
+            addr_start = m.group(0).strip()
+            # Find the postal code and city after the street address
+            m2 = re.search(r'(\w+)\s+(\d{5,5})\b', text[max(0, m.end()-20):], re.IGNORECASE)
+            if m2:
+                city = m2.group(1)
+                postal = m2.group(2)
+                if city.upper() not in ['NOTA', 'RP', 'JUIN', 'DATE', 'TYPE', 'NUMERO', 'BATIMENT', 'SURFACES', 'LEGENDE']:
+                    return f"{addr_start}, {postal} {city}"
+            return addr_start
+        return ""
 
     def _extract_typology_hint(self, text):
         # Pattern "Appartement B13 -Type 2 -Niveau R+1"

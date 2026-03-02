@@ -29,6 +29,10 @@ from .room_normalizer import RoomNormalizer
 from .composite_resolver import CompositeResolver
 from .metadata_extractor import MetadataExtractor
 from .plan_validator import PlanValidator
+from .floor_utils import FloorUtils
+from .room_parsers import RoomParsers
+from .room_inference import RoomInference
+from .deduplication import DeduplicationUtils
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +65,11 @@ class SuperExtractor:
         self.composite_resolver = CompositeResolver()
         self.metadata_extractor = MetadataExtractor()
         self.validator = PlanValidator()
+        # Modular components
+        self.floor_utils = FloorUtils(self.normalizer)
+        self.parsers = RoomParsers(self.normalizer)
+        self.inference = RoomInference()
+        self.dedup = DeduplicationUtils()
 
     def extract(
         self, pdf_path: str, reference_hint: Optional[str] = None
@@ -216,7 +225,7 @@ class SuperExtractor:
                 all_floors.append(result.floor)
         
         # Dédoublonner les pièces fusionnées (même type+numéro+surface)
-        all_rooms = self._final_dedup(all_rooms)
+        all_rooms = self.dedup.final_dedup(all_rooms)
         
         # Remove false duplicates: if 'placard' has same surface as 'salle_de_bain', keep only salle_de_bain
         all_rooms = self._remove_false_duplicates(all_rooms)
@@ -371,7 +380,7 @@ class SuperExtractor:
                 single = page_results[0]
                 single.reference = ref
                 if single.living_space > 0:
-                    single.rooms = self._filter_by_reference(
+                    single.rooms = self.dedup.filter_by_reference(
                         single.rooms, ref, single.living_space
                     )
                     single.sources = {r.name_normalized: r.source for r in single.rooms}
@@ -379,7 +388,7 @@ class SuperExtractor:
 
             else:
                 # Multi-page lot: check for distinct floors
-                floor_split = self._build_floor_split(ref, page_results)
+                floor_split = self.floor_utils.build_floor_split(ref, page_results)
 
                 if len(floor_split) > 1:
                     # Duplex/maison: create parent ExtractionResult with nested floors
@@ -473,7 +482,7 @@ class SuperExtractor:
         # Group pages by normalized floor
         by_floor = {}
         for r in page_results:
-            floor = self._normalize_floor_label(r.floor or "")
+            floor = self.floor_utils.normalize_floor_label(r.floor or "")
             if not floor:
                 floor = "unknown"
             by_floor.setdefault(floor, []).append(r)
@@ -507,7 +516,7 @@ class SuperExtractor:
 
             # Get floor plan labels for this floor
             # (room names printed on the drawing, not in the table)
-            labels = self._get_floor_plan_labels(pages, all_rooms_by_norm)
+            labels = self.floor_utils._get_floor_plan_labels(pages, all_rooms_by_norm)
 
             if labels:
                 floor_rooms = labels
@@ -853,7 +862,7 @@ class SuperExtractor:
                 logger.info(f"  📄 Surface totale OCR: {ocr_total} m²")
 
         # Étape 3b: Dédoublonnage final
-        rooms = self._final_dedup(rooms)
+        rooms = self.dedup.final_dedup(rooms)
 
         result.rooms = rooms
         result.sources = {r.name_normalized: r.source for r in rooms}
@@ -901,7 +910,7 @@ class SuperExtractor:
         # Ne pas filtrer si on est dans un contexte multi-page:
         # le filtre sera appliqué APRÈS combinaison des étages.
         if result.living_space > 0 and not is_multipage_context:
-            result.rooms = self._filter_by_reference(
+            result.rooms = self.dedup.filter_by_reference(
                 result.rooms, result.reference, result.living_space
             )
             result.sources = {r.name_normalized: r.source for r in result.rooms}
@@ -930,8 +939,8 @@ class SuperExtractor:
         # Si la surface calculée est inférieure à la surface déclarée d'exactement
         # la surface d'une chambre plausible (5-40 m²), on infère la chambre manquante.
         # Cas typique: OCR dégradé sur une cellule du tableau récapitulatif.
-        result = self._infer_missing_living_room(result)
-        result = self._infer_missing_bedroom(result)
+        result = self.inference.infer_missing_living_room(result)
+        result = self.inference.infer_missing_bedroom(result)
 
         # ── ÉTAPE 7: Validation ───────────────────────────────
         self.validator.validate(result)

@@ -21,15 +21,20 @@ import argparse
 from pathlib import Path
 
 
-def split_pdf(input_pdf: str, output_dir: str, verbose: bool = False):
-    """Diviser un PDF en pages individuelles.
+def split_pdf(input_pdf: str, output_dir: str, verbose: bool = False, by_house: bool = False):
+    """Diviser un PDF en pages individuelles ou par maison/lot.
     
     Args:
         input_pdf: Chemin vers le fichier PDF source
         output_dir: Repertoire de sortie pour les pages
         verbose: Mode verbeux
+        by_house: Grouper les pages par maison/lot (memes references ensemble)
     """
     import fitz
+    from collections import defaultdict
+    
+    # Import metadata extractor for house reference extraction
+    from .extractors.super_extractor.metadata_extractor import MetadataExtractor
     
     input_path = Path(input_pdf)
     output_path = Path(output_dir)
@@ -40,20 +45,87 @@ def split_pdf(input_pdf: str, output_dir: str, verbose: bool = False):
     
     output_path.mkdir(parents=True, exist_ok=True)
     
-    with fitz.open(input_path) as doc:
-        page_count = doc.page_count
-        for page_index in range(page_count):
-            new_pdf = fitz.open()
-            new_pdf.insert_pdf(doc, from_page=page_index, to_page=page_index)
-
-            file_name = output_path / f"{input_path.stem}_page_{page_index + 1}.pdf"
-            new_pdf.save(str(file_name))
-            new_pdf.close()
+    metadata_extractor = MetadataExtractor()
+    
+    if by_house:
+        # Grouper les pages par maison/lot
+        house_pages = defaultdict(list)  # reference -> list of page indices
+        
+        with fitz.open(input_path) as doc:
+            page_count = doc.page_count
             
-            if verbose:
-                print(f"  - Page {page_index + 1}: {file_name.name}")
+            for page_index in range(page_count):
+                page = doc[page_index]
+                
+                # Extraire le texte de la page
+                text = page.get_text()
+                
+                # Utiliser le metadata extractor pour obtenir la reference
+                metadata = metadata_extractor.extract(text)
+                reference = metadata.get('reference', '')
+                floor = metadata.get('floor', '')
+                
+                # Si pas de reference trouvee, utiliser "UNKNOWN"
+                if not reference or reference == 'UNKNOWN':
+                    reference = f"lot_{page_index + 1}"
+                
+                # Creer une cle unique pour la maison (reference + etage pour le tri)
+                house_key = reference
+                
+                house_pages[house_key].append({
+                    'page_index': page_index,
+                    'floor': floor,
+                    'reference': reference
+                })
+                
+                if verbose:
+                    print(f"  - Page {page_index + 1}: Reference={reference}, Etage={floor}")
+        
+        # Creer les PDFs组合 pour chaque maison
+        created_files = []
+        with fitz.open(input_path) as doc:
+            for house_key, pages_info in house_pages.items():
+                if len(pages_info) == 1:
+                    # Une seule page pour cette maison
+                    page_index = pages_info[0]['page_index']
+                    new_pdf = fitz.open()
+                    new_pdf.insert_pdf(doc, from_page=page_index, to_page=page_index)
+                    file_name = output_path / f"{house_key}.pdf"
+                else:
+                    # Plusieurs pages pour la meme maison (RDC, R+1, R+2, etc.)
+                    new_pdf = fitz.open()
+                    # Trier les pages par etage
+                    sorted_pages = sorted(pages_info, key=lambda x: x['floor'])
+                    for page_info in sorted_pages:
+                        new_pdf.insert_pdf(doc, from_page=page_info['page_index'], to_page=page_info['page_index'])
+                    file_name = output_path / f"{house_key}.pdf"
+                
+                new_pdf.save(str(file_name))
+                new_pdf.close()
+                created_files.append((house_key, len(pages_info)))
+                
+                if verbose:
+                    print(f"  - Cree: {file_name.name} ({len(pages_info)} page(s))")
+        
+        print(f"[OK] Extraction terminee: {len(created_files)} fichier(s) cree(s) dans '{output_path}'")
+        for house_key, page_count in created_files:
+            print(f"    - {house_key}.pdf: {page_count} page(s)")
+    else:
+        # Comportement original: chaque page dans un fichier separé
+        with fitz.open(input_path) as doc:
+            page_count = doc.page_count
+            for page_index in range(page_count):
+                new_pdf = fitz.open()
+                new_pdf.insert_pdf(doc, from_page=page_index, to_page=page_index)
 
-    print(f"[OK] Extraction terminee: {page_count} pages creees dans '{output_path}'")
+                file_name = output_path / f"{input_path.stem}_page_{page_index + 1}.pdf"
+                new_pdf.save(str(file_name))
+                new_pdf.close()
+                
+                if verbose:
+                    print(f"  - Page {page_index + 1}: {file_name.name}")
+
+        print(f"[OK] Extraction terminee: {page_count} pages creees dans '{output_path}'")
 
 
 def batch_process_files(paths: list, args):
@@ -269,6 +341,13 @@ Exemples:
         help='Diviser le PDF en pages individuelles'
     )
     
+    # By-house grouping flag (for split mode)
+    parser.add_argument(
+        '--by-house', '-bh',
+        action='store_true',
+        help='Grouper les pages par maison/lot (memes references ensemble)'
+    )
+    
     # Batch mode flag
     parser.add_argument(
         '--batch', '-b',
@@ -320,7 +399,7 @@ Exemples:
             print("Erreur: Veuillez specifier un fichier PDF a diviser", file=sys.stderr)
             sys.exit(1)
         output_dir = args.output if args.output else 'output_pages'
-        split_pdf(args.input_pdf, output_dir, args.verbose)
+        split_pdf(args.input_pdf, output_dir, args.verbose, args.by_house)
         sys.exit(0)
     
     # Otherwise, use the original extraction logic
