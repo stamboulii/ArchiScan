@@ -95,6 +95,7 @@ class ExtractionResult:
     validation_warnings: List[str] = field(default_factory=list)
     sources: Dict[str, str] = field(default_factory=dict)
     raw_text: str = ""
+    floor_results: "List[Any]" = field(default_factory=list)  # pour duplex/maison multi-niveaux
     promoter_detected: str = ""
 
     @property
@@ -154,13 +155,13 @@ class ExtractionResult:
                 "orientation": "",
                 "price": "N.C",
                 "living_space": str(self.living_space) if self.living_space else str(self.interior_surface_calc),
-                "annex_space": str(self.annex_space),
+                "annex_space": str(self.annex_space if self.annex_space else self.annex_surface_calc),
                 "surfaceDetail": surface_detail,
                 "surfaceComposites": self.composites,
                 "surfaceTotals": {
                     "habitable": self.living_space if self.living_space else self.interior_surface_calc,
                     "habitable_calc": self.interior_surface_calc,
-                    "annexe": self.annex_space,
+                    "annexe": self.annex_space if self.annex_space else self.annex_surface_calc,
                     "annexe_calc": self.annex_surface_calc,
                 },
                 "option": {
@@ -201,7 +202,20 @@ class ExtractionResult:
         # Ajouter le texte brut seulement si demande
         if include_raw_text and self.raw_text:
             result[self.reference]['_raw_text'] = self.raw_text
-        
+
+        # Si multi-niveaux (duplex/maison): imbriquer les résultats par étage
+        if self.floor_results:
+            nested = {}
+            for floor_result in self.floor_results:
+                floor_legacy = floor_result.to_legacy_format(include_raw_text=False)
+                # floor_legacy = {"A18": {...}} → on veut {"A18_R+1": {...}}
+                floor_key = f"{floor_result.reference}_{floor_result.floor}"
+                inner = list(floor_legacy.values())[0]
+                inner["floor_key"] = floor_key
+                nested[floor_key] = inner
+            # Remplacer le contenu par la structure imbriquée
+            result[self.reference] = nested
+
         return result
     
     def _floor_to_niveaux(self, floor: str) -> List[str]:

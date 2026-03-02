@@ -2,6 +2,7 @@
 Configuration centralisee pour ArchiExtract.
 Tous les chemins, cles API et constantes en un seul endroit.
 Validation avec Pydantic. Supporte les variables d'environnement (prefixe ARCHI_).
+Support Streamlit Cloud via st.secrets.
 """
 
 import logging
@@ -10,9 +11,71 @@ import tempfile
 from pathlib import Path
 from typing import Optional
 
-# Chargement automatique du fichier .env
+# Chargement automatique du fichier .env (pour developpement local)
 from dotenv import load_dotenv
-load_dotenv()  # Charge les variables depuis le fichier .env a la racine du projet
+
+# Essayer de charger .env si present (ne fail pas si absent)
+try:
+    load_dotenv()
+except:
+    pass
+
+
+def _get_streamlit_secret(key: str, default: str = None) -> Optional[str]:
+    """
+    Recupere un secret depuis Streamlit Cloud secrets.
+    Fonctionne en local et sur Streamlit Cloud.
+    
+    Args:
+        key: Nom du secret
+        default: Valeur par defaut si non trouve
+        
+    Returns:
+        Valeur du secret ou default
+    """
+    try:
+        import streamlit as st
+        if hasattr(st, 'secrets') and st.secrets:
+            if key in st.secrets:
+                return st.secrets[key]
+    except:
+        pass
+    return default
+
+
+def _get_config_value(key: str, env_prefix: str = "ARCHI_", default: str = None) -> str:
+    """
+    Recupere une valeur de configuration depuis plusieurs sources:
+    1. Streamlit Secrets (priorite pour Cloud)
+    2. Variables d'environnement avec prefixe ARCHI_
+    3. Variables d'environnement sans prefixe (retrocompatibilite)
+    4. Valeur par defaut
+    
+    Args:
+        key: Nom de la configuration
+        env_prefix: Prefix pour les variables d'environnement
+        default: Valeur par defaut
+        
+    Returns:
+        Valeur de la configuration
+    """
+    # 1. Streamlit Secrets (pour Streamlit Cloud)
+    secret_value = _get_streamlit_secret(key)
+    if secret_value:
+        return secret_value
+    
+    # 2. Variables d'environnement avec prefixe ARCHI_
+    env_key = f"{env_prefix}{key}"
+    env_value = os.environ.get(env_key)
+    if env_value:
+        return env_value
+    
+    # 3. Variables d'environnement sans prefixe (retrocompatibilite)
+    if key == "CLAUDE_API_KEY":
+        #Historique: ANTHROPIC_API_KEY
+        return os.environ.get("ANTHROPIC_API_KEY", default or "")
+    
+    return default or ""
 
 from pydantic import BaseModel, field_validator
 
@@ -97,41 +160,42 @@ class AppConfig(BaseModel):
 
 def _load_config() -> AppConfig:
     """
-    Charge la configuration depuis les variables d'environnement.
+    Charge la configuration depuis les variables d'environnement ou Streamlit Secrets.
     Supporte le prefixe ARCHI_ et les noms historiques.
     """
     env_values = {}
 
     # Cle API : ARCHI_CLAUDE_API_KEY ou ANTHROPIC_API_KEY
-    api_key = os.environ.get("ARCHI_CLAUDE_API_KEY") or os.environ.get("ANTHROPIC_API_KEY", "")
+    # ou depuis Streamlit Secrets (claude_api_key)
+    api_key = _get_config_value("CLAUDE_API_KEY", default="")
     if api_key:
         env_values['claude_api_key'] = api_key
 
     # Modele Claude
-    model = os.environ.get("ARCHI_CLAUDE_MODEL")
+    model = _get_config_value("CLAUDE_MODEL")
     if model:
         env_values['claude_model'] = model
 
     # Max tokens
-    max_tokens = os.environ.get("ARCHI_CLAUDE_MAX_TOKENS")
+    max_tokens = _get_config_value("CLAUDE_MAX_TOKENS")
     if max_tokens:
         env_values['claude_max_tokens'] = int(max_tokens)
 
     # Seuils
-    min_conf = os.environ.get("ARCHI_MIN_CONFIDENCE")
+    min_conf = _get_config_value("MIN_CONFIDENCE")
     if min_conf:
         env_values['min_confidence'] = float(min_conf)
 
-    min_samples = os.environ.get("ARCHI_MIN_VALIDATED_SAMPLES")
+    min_samples = _get_config_value("MIN_VALIDATED_SAMPLES")
     if min_samples:
         env_values['min_validated_samples'] = int(min_samples)
 
-    ml_threshold = os.environ.get("ARCHI_ML_CONFIDENCE_THRESHOLD")
+    ml_threshold = _get_config_value("ML_CONFIDENCE_THRESHOLD")
     if ml_threshold:
         env_values['ml_confidence_threshold'] = float(ml_threshold)
 
     # Tesseract
-    tess_lang = os.environ.get("ARCHI_TESSERACT_LANG")
+    tess_lang = _get_config_value("TESSERACT_LANG")
     if tess_lang:
         env_values['tesseract_lang'] = tess_lang
 

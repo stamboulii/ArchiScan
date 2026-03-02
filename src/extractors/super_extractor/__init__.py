@@ -27,10 +27,10 @@ def setup_super_extractor_logging():
 # Appeler immediatement
 setup_super_extractor_logging()
 
-from .super_extractor import SuperExtractor, extract_plan_data, extract_plan_data_legacy, batch_extract
+from .super_extractor import SuperExtractor, extract_plan_data, extract_plan_data_legacy, batch_extract, extract_all_plans
 from .models import RoomType, ExtractedRoom, ExtractionResult
 
 __all__ = [
     "SuperExtractor", "extract_plan_data", "extract_plan_data_legacy",
-    "batch_extract", "RoomType", "ExtractedRoom", "ExtractionResult",
+    "batch_extract", "extract_all_plans", "RoomType", "ExtractedRoom", "ExtractionResult",
 ]

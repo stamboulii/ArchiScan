@@ -12,11 +12,17 @@ logger = logging.getLogger(__name__)
 class MetadataExtractor:
 
     REF_PATTERNS = [
+        # Priorité 0: Logement code "A 101", "B 203"
+        r"Logement\s*[:\s]*([A-Z]\s*\d{3,4})",
+        r"\b([A-Z])\s(\d{3,4})\b",  # standalone "A 101"
         # Priorité 1: pattern explicite avec contexte
         r"Appartement\s+([A-Z]\d{2,4})",
         r"APPARTEMENT\s*[:\s]*([A-Z]\d{2,4})",
         r"LOT\s*[:\s]*([A-Z]?\d{2,4})",
         r"R[ÉE]F[ÉE]RENCE\s*[:\s]*(\w+)",
+        # Priorité 1b: format Bâtiment-Lot "B2-402", "B1-101"
+        r"NUMERO\s*LOT[^\n]{0,40}?(\b[A-Z]\d{1,2}-\d{3,4}\b)",
+        r"\b([A-Z]\d{1,2}-\d{3,4})\b",  # B2-402, B1-101
         # Priorité 2: code seul (A008, B13, C234)
         r"\b([A-Z]\d{3,4})\b",
         r"\b([A-Z]\d{2})\b",  # ← REMETTRE mais avec blacklist
@@ -24,9 +30,18 @@ class MetadataExtractor:
 
     REF_BLACKLIST = {"R1", "R2", "R3", "T1", "T2", "T3", "T4", "T5", "T6",
                  "A1", "A2", "A3", "B1", "B2", "B3",  # trop courts/génériques
-                 "DATE", "TYPE", "PLAN", "NOTA", "IND"}
+                 "DATE", "TYPE", "PLAN", "NOTA", "IND",
+                 # Articles de loi CCH (faux positifs)
+                 "L261", "R261", "L111", "R111", "L123", "R123",
+                 "L151", "R151", "L152", "R152", "L421", "R421",
+                 # Height codes from architectural drawings (Hauteur XXX cm)
+                 "H180", "H214", "H250", "H360", "H110", "H160", "H200",
+                 "H220", "H240", "H270", "H300", "H320", "H350", "H400"}
 
     FLOOR_PATTERNS = [
+        # Numeric floor codes: "Etage 001", "Etage 002" — keep as-is
+        (r"\bEtage\b.{0,300}?\b(0\d{2})\b", lambda m: m.group(1)),  # "Etage ... 001"
+        (r"\bEtage\s+(\d{3})\b", lambda m: m.group(1)),
         # Combinaison RDC + ETAGE (indique une maison avec plusieurs niveaux)
         (r"REZ\s*DE\s*CHAUSSEE\s*(ETAGE|\+|/)\s*ETAGE", "RDC+1"),
         (r"RDC\s*(ETAGE|\+|/)\s*ETAGE", "RDC+1"),
@@ -42,6 +57,13 @@ class MetadataExtractor:
         (r"(\d+)\s*(?:er|e|[èe]me)\s*[ée]tage", lambda m: f"R+{m.group(1)}"),
         (r"NIVEAU\s*[:\s]*R\+(\d+)", lambda m: f"R+{m.group(1)}"),
         (r"\bR\+(\d+)\b", lambda m: f"R+{m.group(1)}"),
+        # "duplex au 1er étage", "duplex au 2eme étage", "duplex au 2ème étage"
+        (r"duplex\s+au\s+1er?\s*[ée]tage", "R+1"),
+        (r"duplex\s+au\s+2[eè]me?\s*[ée]tage", "R+2"),
+        (r"duplex\s+au\s+(\d+)[eè]me?\s*[ée]tage", lambda m: f"R+{m.group(1)}"),
+        # "au 1er étage", "au 2ème étage" (standalone)
+        (r"au\s+1er?\s*[ée]tage", "R+1"),
+        (r"au\s+(\d+)[eè]me?\s*[ée]tage", lambda m: f"R+{m.group(1)}"),
     ]
 
     BUILDING_PATTERNS = [
@@ -60,6 +82,8 @@ class MetadataExtractor:
         r"icade|ICADE": "Icade",
         r"altarea|ALTAREA": "Altarea",
         r"promogim|PROMOGIM": "Promogim",
+        r"groupe\s*duval|GROUPE\s*DUVAL|duval": "Groupe Duval",
+        r"ink\s*architectes|INK": "Ink Architectes",
         r"pitch[\s\-]?promotion": "Pitch Promotion",
     }
 
@@ -111,6 +135,9 @@ class MetadataExtractor:
         # Combiner les patterns normaux et multilignes pour surface_propriete
         property_patterns = self.PROPERTY_SPACE_PATTERNS + self.PROPERTY_SPACE_PATTERNS_MULTILINE
         
+        # Extract program name
+        program = self._extract_program(full_text)
+
         return {
             "reference": self._extract_first(full_text, self.REF_PATTERNS,
                                               reference_hint or "UNKNOWN"),
@@ -121,18 +148,46 @@ class MetadataExtractor:
             "annex_space": self._extract_surface(full_text, self.ANNEX_SPACE_PATTERNS),
             "address": self._extract_address(full_text),
             "typology_hint": self._extract_typology_hint(full_text),
+            "program": program,
             "surface_propriete": self._extract_surface(full_text, property_patterns),
             "surface_espaces_verts": self._extract_surface(full_text, self.GARDEN_SPACE_PATTERNS),
         }
+
+    PROGRAM_PATTERNS = [
+        r"(?:Résidence|Domaine|Les?|Le|La|Villa|Programme)\s+[A-Z][A-Za-zÀ-ÿ'\s\-]{3,40}",
+    ]
+
+    def _extract_program(self, text: str) -> str:
+        """Extract program/residence name from text."""
+        for p in self.PROGRAM_PATTERNS:
+            m = re.search(p, text)
+            if m:
+                name = m.group(0).strip()
+                # Trim at street/address keywords
+                name = re.split(
+                    r'\s+(?:Rue|Avenue|Boulevard|All[ée]e|Impasse|Place|Chemin|Route)\b',
+                    name, flags=re.IGNORECASE)[0].strip()
+                # Filter out false positives
+                if len(name) > 8 and not any(w in name.upper() for w in
+                        ['SURFACE', 'PLAN', 'ETAGE', 'TOTAL', 'TYPE']):
+                    return name
+        return ""
 
     def _extract_first(self, text, patterns, default):
         for p in patterns:
             m = re.search(p, text, re.IGNORECASE)
             if m:
-                ref = m.group(1).strip()
+                # Handle patterns with 2 groups (e.g. r"\b([A-Z])\s(\d{3,4})\b")
+                if m.lastindex and m.lastindex >= 2:
+                    ref = "".join(g for g in m.groups() if g).strip()
+                else:
+                    ref = m.group(1).strip()
+                ref = re.sub(r'\s+', '', ref)  # "A 101" → "A101"
                 if ref.upper() in self.REF_BLACKLIST:
                     continue
-                # Au moins 1 lettre + 2 chiffres pour être valide
+                # Rejeter si la ref est dans "L261-15" (article de loi)
+                if re.search(rf"\\b{re.escape(ref)}-\\d{{1,2}}\\b", text, re.IGNORECASE):
+                    continue
                 if len(ref) >= 3 or re.match(r"^[A-Z]\d{2,}$", ref):
                     return ref
         return default

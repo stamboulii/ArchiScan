@@ -682,7 +682,10 @@ class HybridExtractor:
     def _auto_install_tesseract(self) -> bool:
         """
         Installe automatiquement Tesseract si les donnees tessdata sont presentes
-        mais le binaire est manquant. Utilise le script install_tesseract.py.
+        mais le binaire est manquant. 
+        
+        NOTE: Cette fonction ne fonctionne que en local (Windows/Linux avec sudo).
+        Sur Streamlit Cloud, Tesseract doit etre pre-installe.
         
         Returns:
             True si l'installation a reussi, False sinon
@@ -690,6 +693,18 @@ class HybridExtractor:
         import subprocess
         import sys
         import os
+        
+        # Verifier si on est sur Streamlit Cloud (lecture seule)
+        try:
+            # Sur Streamlit Cloud, on ne peut pas installer de packages systeme
+            import streamlit as st
+            # Si on peut acceder a st.runtime, c'est probablement Streamlit Cloud
+            if hasattr(st, 'runtime') and st.runtime.exists():
+                logger.warning("Installation automatique desactivee sur Streamlit Cloud")
+                logger.warning("Veuillez installer Tesseract via le Dockerfile ou les dependances du systeme")
+                return False
+        except:
+            pass
         
         logger.info("Demarrage installation automatique de Tesseract...")
         
@@ -702,16 +717,15 @@ class HybridExtractor:
             return False
         
         try:
-            # Executer le script d'installation en mode automatique (option 1 pour Windows)
             if sys.platform == "win32":
-                # Essayer le telechargement automatique
-                logger.info("Execution du script d'installation Tesseract (mode automatique)...")
+                # Pour Windows, utiliser le script d'installation
+                logger.info("Execution du script d'installation Tesseract (Windows)...")
                 result = subprocess.run(
                     [sys.executable, install_script],
-                    input="1\n",  # Choix 1: Telechargement automatique
+                    input="1\n",
                     capture_output=True,
                     text=True,
-                    timeout=300  # 5 minutes timeout pour le telechargement
+                    timeout=300
                 )
                 
                 if result.returncode == 0:
@@ -720,17 +734,54 @@ class HybridExtractor:
                 else:
                     logger.warning(f"Echec installation Tesseract: {result.stderr}")
                     return False
+                    
             else:
-                # Pour Linux/Mac, essayer installation systeme
-                logger.info("Installation Tesseract sur systeme non-Windows...")
-                result = subprocess.run(
-                    [sys.executable, install_script],
-                    input="2\n",  # Choix 2: Installation systeme
-                    capture_output=True,
-                    text=True,
-                    timeout=120
-                )
-                return result.returncode == 0
+                # Pour Linux/Mac, installation via apt/brew directement
+                logger.info("Installation Tesseract sur systeme Linux/Mac...")
+                
+                # Detecter le gestionnaire de paquets
+                if sys.platform == "darwin":  # Mac
+                    result = subprocess.run(
+                        ["brew", "install", "tesseract"],
+                        capture_output=True,
+                        text=True,
+                        timeout=120
+                    )
+                    if result.returncode == 0:
+                        logger.info("Tesseract installe via Homebrew")
+                        return True
+                else:
+                    # Linux - essayer apt-get
+                    # Note: necessite sudo, ce qui peut echouer dans un container
+                    try:
+                        # Essayer sans sudo d'abord (peut echouer)
+                        result = subprocess.run(
+                            ["apt-get", "install", "-y", "tesseract-ocr"],
+                            capture_output=True,
+                            text=True,
+                            timeout=120
+                        )
+                        if result.returncode == 0:
+                            logger.info("Tesseract installe via apt-get")
+                            return True
+                    except:
+                        pass
+                    
+                    # Si echec, essayer avec sudo
+                    logger.info("Essayons avec sudo...")
+                    result = subprocess.run(
+                        ["sudo", "apt-get", "install", "-y", "tesseract-ocr"],
+                        capture_output=True,
+                        text=True,
+                        timeout=120
+                    )
+                    if result.returncode == 0:
+                        logger.info("Tesseract installe via sudo apt-get")
+                        return True
+                    
+                logger.warning("Impossible d'installer Tesseract automatiquement sur Linux")
+                logger.warning("Veuillez installer Tesseract manuellement: sudo apt-get install tesseract-ocr")
+                return False
                 
         except subprocess.TimeoutExpired:
             logger.warning("Installation Tesseract trop longue, annulation")

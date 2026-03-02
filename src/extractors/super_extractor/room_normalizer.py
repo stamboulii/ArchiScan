@@ -28,6 +28,11 @@ class RoomNormalizer:
             "sejour_cuisine", RoomType.LIVING_KITCHEN, False),
             (r"^(LIVING|ESPACE)\s*/?\s*(CUISINE|KITCHEN)",
             "sejour_cuisine", RoomType.LIVING_KITCHEN, False),
+            # Séjour-Cuisine avec tiret (variante OCR/plan)
+            (r"^(S[ÉE]JOUR|SEJOUR|SALON|RECEPTION|R[ÉE]CEPTION)\s*[-]\s*(CUISINE|KITCHEN)",
+            "sejour_cuisine", RoomType.LIVING_KITCHEN, False),
+            (r"^(CUISINE)\s*[-]\s*(S[ÉE]JOUR|SEJOUR|SALON)",
+            "sejour_cuisine", RoomType.LIVING_KITCHEN, False),
 
             # SDB/WC combiné (accepte / ou + comme séparateur — OCR confond les deux)
             (r"^(SDB\s*[/+]\s*WC|SDB\s*WC|SALLE\s*DE\s*BAINS?\s*[/+]?\s*WC)$",
@@ -58,9 +63,13 @@ class RoomNormalizer:
             # CUISINE
             # ══════════════════════════════════════════
             (r"^(CUISINE|KITCHENETTE|COIN\s*CUISINE|CUISINE\s*[ÉE]QUIP[ÉE]E|"
-            r"ESPACE\s*CUISINE|CUISINE\s*AM[ÉE]RICAINE|OFFICE)$",
+            r"ESPACE\s*CUISINE|CUISINE\s*AM[ÉE]RICAINE|OFFICE|"
+            r"ARRI[ÈE]RE\s*CUISINE|CUISINE\s*OUVERTE|ARRIERE\s*CUISINE)$",
             "cuisine", RoomType.KITCHEN, False),
 
+            # === Entrée + Placard combiné (OCR: "Entrée + PI.") ===
+            (r"^(ENTR[ÉEée]E|HALL)\s*\+\s*(PI\.?|PL\.?|PLACARD|PLC)$",
+            "entree", RoomType.ENTRY, False),
             # === Entrée/DGT combiné (AVANT le pattern entrée simple) ===
             (r"^(ENTREE\s*/\s*DGT|ENTR[ÉEée]E\s*/\s*D[ÉE]GAGEMENT|"
             r"HALL\s*/\s*DGT|ENTR[ÉEée]E\s*/\s*CIRCULATION)$",
@@ -69,14 +78,14 @@ class RoomNormalizer:
             # === PLACARD (ajoute) ===
             # Note: pattern must NOT match "Pl (sous escalier)" - more specific patterns first
             (r"^PLACARD$", "placard", RoomType.STORAGE, False),
-            (r"^(RANGEMENT|DRESSING|ARMOIRE)$", "placard", RoomType.STORAGE, False),
+            (r"^(DRESSING|ARMOIRE)$", "placard", RoomType.STORAGE, False),
             # Handle "Pl (sous escalier)" -> "placard_escalier"
             (r"^PL\s*\(.*?ESCALIER.*?\)$",
             "placard_escalier", RoomType.STORAGE, True),
             
             # === RANGEMENT (ajoute) ===
             (r"^(RANGEMENT|STOCKAGE|DEBARRAS)$",
-            "rangement", RoomType.STORAGE, False),
+            "storage", RoomType.STORAGE, False),
             
             # === RANGEMENT avec numero ===
             (r"^(RANGEMENT|PLACARD|DRESSING)\s*(\d+)$",
@@ -103,7 +112,7 @@ class RoomNormalizer:
             # PALIER -> palier (not circulation)
             (r"^(PALIER)$",
             "palier", RoomType.CIRCULATION, False),
-            (r"^(DGT|D\.G\.T\.?|D[\u00c9E]GAGEMENT|COULOIR|CIRCULATION|"
+            (r"^(DGT|D\.G\.T\.?|DEG\.?|D[ÉE]G\.?|D[ÉE]GAGEMENT|COULOIR|CIRCULATION|"
             r"DIST\.?|DISTRIBUTION|PASSAGE|COURSIVE|ESCALIER)$",
             "circulation", RoomType.CIRCULATION, False),
 
@@ -138,7 +147,7 @@ class RoomNormalizer:
             # ══════════════════════════════════════════
             # SALLE D'EAU
             # ══════════════════════════════════════════
-            (r"^(SALLE\s*D['\u2019']?\s*EAU|SDE|S\.?\s*D\.?\s*E\.?|EAU)\s*(\d+)$",
+            (r"^(SALLE\s*D['\u2019']?\s*EAU|SDE|S\.?\s*D\.?\s*E\.?|EAU)\s*(?:N[°\u00b0]?)?\s*(\d+)$",
             "salle_d_eau_{n}", RoomType.SHOWER_ROOM, False),
             (r"^(SALLE\s*D['\u2019']?\s*EAU|SDE|S\.?\s*D\.?\s*E\.?|EAU)$",
             "salle_d_eau", RoomType.SHOWER_ROOM, False),
@@ -157,7 +166,9 @@ class RoomNormalizer:
             # RANGEMENTS
             # ══════════════════════════════════════════
             (r"^(DRESSING)\s*(\d*)$", "dressing", RoomType.DRESSING, False),
-            (r"^(PLACARD|CELLIER|BUANDERIE|LINGERIE|RANGEMENT|RGT|"
+               (r"^(BUANDERIE|LINGERIE)$", "buanderie", RoomType.STORAGE, False),
+            (r"^ARRI[\u00c8E]RE\s*CUISINE$", "arriere_cuisine", RoomType.KITCHEN, False),
+         (r"^(PLACARD|CELLIER|RANGEMENT|RGT|"
             r"LOCAL\s*TECHNIQUE|LOCAL\s*POUSSETTE|CELLIER\s*/\s*BUANDERIE|"
             r"GRENIER|REMISE|D[\u00c9E]BARRAS|CAVE\s*INT[\u00c9E]RIEURE|"
             r"LOCAL|STOCKAGE)$",
@@ -182,6 +193,9 @@ class RoomNormalizer:
             # EXTÉRIEUR - TERRASSE
             # ══════════════════════════════════════════
             (r"^TERRASSE\s*(\d*)$", "terrasse", RoomType.TERRACE, True),
+            # Terrasse avec jardinière (format "TERRASSE+JARDINIERE")
+            (r"^TERRASSE\s*\+\s*(JARDINIERE|JARDIN[IÈ]RE|JARDIN)\s*(\d*)$",
+            "terrasse", RoomType.TERRACE, True),
             (r"^(TERRASSE\s*COUVERTE)\s*(\d*)$", "terrasse", RoomType.TERRACE, True),
             (r"^(ROOF\s*TOP|TOIT\s*TERRASSE)\s*(\d*)$", "terrasse", RoomType.TERRACE, True),
             (r"^(SOLARIUM)\s*(\d*)$", "terrasse", RoomType.TERRACE, True),
@@ -191,6 +205,9 @@ class RoomNormalizer:
             # ══════════════════════════════════════════
             # Handle "MI011 Espaces verts" - filter out reference prefix
             (r"^(ESPACES\s*VERTS|JARDIN|JARDINET|JARDIN\s*PRIVATIF)\s*(\d*)$",
+            "jardin", RoomType.GARDEN, True),
+            # Espace planté (jardinière sur terrasse)
+            (r"^(ESPACE\s*PLANT[ÉEée]S?|ESPACE\s*VERT)\s*(\d*)$",
             "jardin", RoomType.GARDEN, True),
 
             # ══════════════════════════════════════════
