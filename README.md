@@ -102,6 +102,110 @@ python -m src pdfExample/A008.pdf --output result.json
 python -m src pdfExample/A008.pdf --quiet
 ```
 
+### Option 2b: Extract CLI (SuperExtractor)
+
+CLI dédié pour l'extraction via SuperExtractor avec sortie JSON propre.
+
+```bash
+# Usage de base
+extract_cli.py <pdf_path> [options]
+
+# Options disponibles:
+#   -r, --reference REFERENCE  Reference/Lot number (optional)
+#   -o, --output OUTPUT       Output JSON file
+#   -p, --pretty             Pretty print JSON output
+#   -q, --quiet              Suppress all logging output
+#   -h, --help               Show help message
+
+# Exemples:
+
+# Sortie JSON simple vers stdout
+python extract_cli.py plans/M01.pdf
+
+# Pretty print JSON (formaté avec indentation)
+python extract_cli.py plans/M01.pdf --pretty
+
+# Avec référence personnalisée
+python extract_cli.py plans/M01.pdf -r "LOT19"
+
+# Sauvegarder dans un fichier
+python extract_cli.py plans/M01.pdf -o output.json
+
+# Mode silencieux (sans logs debug/info)
+python extract_cli.py plans/M01.pdf -q -p
+
+# Combination complète
+python extract_cli.py plans/M01.pdf -r "LOT19" -o output.json -q -p
+```
+
+#### Format de sortie extract_cli.py
+
+```json
+{
+    "parcelLabel": "M01",
+    "parcelTypeId": "appartment",
+    "mailclient": "",
+    "telclient": "",
+    "adresseclient": "",
+    "idclient": "",
+    "mailcommercial": "",
+    "typepaiement": "",
+    "commentaire": "",
+    "parcelTypeLabel": "appartment",
+    "orientation": "",
+    "typology": "T5",
+    "floor": "RDC,R+1",
+    "price": "N.C",
+    "living space": "93.3",
+    "surfaceDetail": [
+        {
+            "name": "chambre_1",
+            "surface": 11.0,
+            "type": "BEDROOM"
+        },
+        {
+            "name": "sejour",
+            "surface": 26.8,
+            "type": "LIVING_ROOM"
+        }
+    ],
+    "option": {
+        "balcony": false,
+        "terrace": true,
+        "garden": true,
+        "parking": false,
+        "winter garden": false,
+        "garage": false,
+        "loggia": false,
+        "duplex": true
+    },
+    "tva": "",
+    "pinel": true,
+    "customData": null,
+    "state": "available",
+    "validate": {
+        "is_valid": true,
+        "errors": [],
+        "warnings": []
+    }
+}
+```
+
+**Champs disponibles:**
+- `parcelLabel` - Référence du lot
+- `parcelTypeId` - Type de parcel (appartment)
+- `typology` - Typologie (T1, T2, T3, etc.)
+- `floor` - Étage(s)
+- `living space` - Surface habitable en m²
+- `surfaceDetail` - Tableau des pièces avec nom, surface, type
+- `option` - Options (balcon, terrasse, jardin, etc.)
+- `validate` - Résultats de validation:
+  - `is_valid` - true si pas d'erreurs
+  - `errors` - Liste des erreurs
+  - `warnings` - Liste des avertissements
+
+**Multi-pages:** Le CLI supporte les PDFs multi-pages. SuperExtractor détecte automatiquement les pages avec le même numéro de lot et les combine.
+
 #### Mode Batch (plusieurs fichiers)
 
 ```bash

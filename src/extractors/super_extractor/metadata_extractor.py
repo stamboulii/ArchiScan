@@ -104,6 +104,10 @@ class MetadataExtractor:
         r"TOTAL\s*SURFACE\s*ANNEXE\s*[:\s]*(\d+[\.,]\d+)",
         r"SURFACE\s*ANNEXE\s*[:\s]*(\d+[\.,]\d+)",
         r"TOTAL\s*EXT[ÉE]RIEURS?\s*[:\s]*(\d+[\.,]\d+)",
+        # Vertex PDF format
+        r"JARDIN\s+(\d+[\.,]\d+)",
+        r"PORCHE\s+(\d+[\.,]\d+)",
+        r"SURFACE\s*JARDIN\s*[:\s]*(\d+[\.,]\d+)",
     ]
     
     # Nouvelles patterns pour surface propriété et espaces verts
@@ -130,6 +134,9 @@ class MetadataExtractor:
         r"SURFACE\s*JARDIN\s*[:\s]*(\d+[\.,]\d+)",
         r"JARDIN\s*PRIVATIF\s*[:\s]*(\d+[\.,]\d+)",
         r"ESPACES\s*VERTS\s*[:\s]*(\d+[\.,]\d+)",
+        # Vertex PDF format - standalone values
+        r"JARDIN\s+(\d+[\.,]\d+)",
+        r"JARDIN$",
     ]
  
 

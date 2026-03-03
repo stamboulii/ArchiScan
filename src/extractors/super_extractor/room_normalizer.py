@@ -110,6 +110,9 @@ class RoomNormalizer:
             (r"^D\.?G\.?T\.?\s*[+]\s*P[LI]\.?\s*$",
              "circulation", RoomType.CIRCULATION, False),
             # PALIER -> palier (not circulation)
+            # Handle "PALIER - BUREAU", "PALIER - bureau", etc.
+            (r"^(PALIER)\s*[-]\s*.*$",
+            "palier", RoomType.CIRCULATION, False),
             (r"^(PALIER)$",
             "palier", RoomType.CIRCULATION, False),
             (r"^(DGT|D\.G\.T\.?|DEG\.?|D[ÉE]G\.?|D[ÉE]GAGEMENT|COULOIR|CIRCULATION|"
@@ -184,8 +187,13 @@ class RoomNormalizer:
             # ══════════════════════════════════════════
             # EXTÉRIEUR - JARDIN
             # ══════════════════════════════════════════
+            # Handle "Jardin" without colon, "Jardin 29.3", etc.
             (r"^JARDIN\s*:?\s*(\d+[\.,]\d+)", "jardin", RoomType.GARDEN, True),
             (r"^JARDIN\s*(\d+)$", "jardin", RoomType.GARDEN, True),
+            (r"^JARDIN$", "jardin", RoomType.GARDEN, True),
+            
+            # PORCHE (exterior)
+            (r"^(PORCHE|PORCH)$", "porche", RoomType.TERRACE, True),
             (r"^BALCON:\s*(\d+[\.,]\d+)", "balcon", RoomType.BALCONY, True),
             (r"^BALCON\s*(\d+)$", "balcon_{n}", RoomType.BALCONY, True),
 
@@ -203,8 +211,12 @@ class RoomNormalizer:
             # ══════════════════════════════════════════
             # EXTÉRIEUR - JARDIN
             # ══════════════════════════════════════════
+            # Handle "Jardin" with or without colon, "Jardin 29.3", etc.
+            (r"^JARDIN\s*:?\s*(\d+[\.,]\d+)", "jardin", RoomType.GARDEN, True),
+            (r"^JARDIN\s*(\d+)$", "jardin", RoomType.GARDEN, True),
+            (r"^JARDIN$", "jardin", RoomType.GARDEN, True),
             # Handle "MI011 Espaces verts" - filter out reference prefix
-            (r"^(ESPACES\s*VERTS|JARDIN|JARDINET|JARDIN\s*PRIVATIF)\s*(\d*)$",
+            (r"^(ESPACES\s*VERTS|JARDINET|JARDIN\s*PRIVATIF)\s*(\d*)$",
             "jardin", RoomType.GARDEN, True),
             # Espace planté (jardinière sur terrasse)
             (r"^(ESPACE\s*PLANT[ÉEée]S?|ESPACE\s*VERT)\s*(\d*)$",
@@ -216,10 +228,16 @@ class RoomNormalizer:
             (r"^(LOGGIA|LOGIA)\s*(\d*)$", "loggia", RoomType.LOGGIA, True),
 
             # ══════════════════════════════════════════
-            # EXTÉRIEUR - PATIO / COUR
+            # EXTÉRIEUR - PATIO / COUR / PORCHE
             # ══════════════════════════════════════════
             (r"^(PATIO|COUR|COURETTE|COUR\s*ANGLAISE)\s*(\d*)$",
             "patio", RoomType.PATIO, True),
+            # Porche (covered entrance area)
+            (r"^(PORCHE)\s*(\d*[\.,]?\d*)$",
+            "porche", RoomType.TERRACE, True),
+            # Porche (covered entrance area)
+            (r"^(PORCHE)\s*(\d*[\.,]?\d*)$",
+            "porche", RoomType.TERRACE, True),
 
             # ══════════════════════════════════════════
             # PARKING / GARAGE (distingués par le nom normalisé)

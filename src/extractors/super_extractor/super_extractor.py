@@ -397,11 +397,12 @@ class SuperExtractor:
                     parent.reference = ref
                     parent.floor = "/".join(floor_split.keys())
                     parent.floor_results = list(floor_split.values())
-                    # Parent totals = sum of all floors
+                    # Use MAX of floor results (each floor's declared living space is the total for that floor)
+                    # floor_utils now calculates correctly excluding CIRCULATION
                     parent.living_space = round(
-                        sum(r.living_space for r in parent.floor_results), 2)
+                        max(r.living_space for r in parent.floor_results), 2)
                     parent.annex_space = round(
-                        sum(r.annex_space for r in parent.floor_results), 2)
+                        max(r.annex_space for r in parent.floor_results), 2)
                     parent.typology = self._detect_typology(
                         [room for r in parent.floor_results for room in r.rooms])
                     all_results[ref] = parent
@@ -1198,11 +1199,11 @@ class SuperExtractor:
         lines = [l.strip() for l in re.split(r'[\n\r]+', text) if l.strip()]
 
         # DEBUG VERSION CHECK
-        import sys as _sys
-        print(f"[DEBUG] two_block parser running, lines={len(lines)}, version=2026-02-27-v2", file=_sys.stderr)
-        # Print ALL lines for diagnosis
-        for _i, _l in enumerate(lines):
-            print(f"[DEBUG]   line[{_i:03d}] {_l!r}", file=_sys.stderr)
+        # import sys as _sys
+        # print(f"[DEBUG] two_block parser running, lines={len(lines)}, version=2026-02-27-v2", file=_sys.stderr)
+        # # Print ALL lines for diagnosis
+        # for _i, _l in enumerate(lines):
+        #     print(f"[DEBUG]   line[{_i:03d}] {_l!r}", file=_sys.stderr)
 
         # ── Pre-processing: remove "surfaces indicatives inf. à 1,8m Ht" sub-table ──
         # This sub-table (low-ceiling areas) appears BEFORE the main habitable table.
@@ -1305,7 +1306,8 @@ class SuperExtractor:
             else:
                 runs.append(cur); cur = [idx]
         runs.append(cur)
-        runs = [r for r in runs if len(r) >= 3]
+        # Keep runs with 1+ surfaces (was >=3, but exterior spaces may have only 1-2)
+        runs = [r for r in runs if len(r) >= 1]
         if not runs:
             return [], 0.0, 0.0
 
@@ -1457,7 +1459,17 @@ class SuperExtractor:
         # ── Post-processing: remove sub-table runs ──────────────────────────
         # If living_space was not set (total keyword not near the surface run),
         # infer it from the largest run's declared total.
-        run_totals = [rt for rt, _ in runs_data if rt > 0]
+        # BUT: exclude exterior runs (jardin, porche) from living_space calculation
+        # as they have small surfaces and would be incorrectly picked up.
+        # ALSO: ignore runs with 0 rooms - these are likely grand totals, not actual runs.
+        run_totals = []
+        for rt, rooms_in_run in runs_data:
+            if rt > 0 and len(rooms_in_run) > 0:
+                # Check if this run contains exterior rooms
+                has_exterior = any(r.is_exterior for r in rooms_in_run if hasattr(r, 'is_exterior'))
+                if not has_exterior:
+                    run_totals.append(rt)
+        
         if living_space == 0.0 and run_totals:
             living_space = max(run_totals)
             logger.info(f"  ℹ️ living_space inferred from largest run: {living_space:.2f}")

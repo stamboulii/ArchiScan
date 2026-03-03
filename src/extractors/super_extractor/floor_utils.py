@@ -99,8 +99,13 @@ class FloorUtils:
             base.floor = floor
             base.rooms = floor_rooms
             base.sources = {r.name_normalized: r.source for r in floor_rooms}
+            # Calculate habitable as sum of NON-CIRCULATION interior rooms
+            # (circulation like degagement/palier are not counted as habitable per French convention)
+            # ENTRY rooms ARE counted in habitable surface
             base.living_space = round(
-                sum(r.surface for r in floor_rooms if not r.is_exterior), 2)
+                sum(r.surface for r in floor_rooms 
+                    if not r.is_exterior and r.room_type.name not in ['CIRCULATION', 'HALL']), 2)
+            # Annex = exterior spaces (jardin, porche, etc.)
             base.annex_space = round(
                 sum(r.surface for r in floor_rooms if r.is_exterior), 2)
             base.typology = self._detect_typology(floor_rooms)
