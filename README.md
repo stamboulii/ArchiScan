@@ -115,6 +115,7 @@ extract_cli.py <pdf_path> [options]
 #   -o, --output OUTPUT       Output JSON file
 #   -p, --pretty             Pretty print JSON output
 #   -q, --quiet              Suppress all logging output
+#   -a, --all                Extract ALL lots from multi-page PDF
 #   -h, --help               Show help message
 
 # Exemples:
@@ -127,6 +128,12 @@ python extract_cli.py plans/M01.pdf --pretty
 
 # Avec référence personnalisée
 python extract_cli.py plans/M01.pdf -r "LOT19"
+
+# Extraire TOUS les lots d'un PDF multi-pages
+python extract_cli.py plans/multipage.pdf -a
+
+# Extraire tous les lots avec pretty print
+python extract_cli.py plans/multipage.pdf -a -p
 
 # Sauvegarder dans un fichier
 python extract_cli.py plans/M01.pdf -o output.json
@@ -142,69 +149,76 @@ python extract_cli.py plans/M01.pdf -r "LOT19" -o output.json -q -p
 
 ```json
 {
-    "parcelLabel": "M01",
-    "parcelTypeId": "appartment",
-    "mailclient": "",
-    "telclient": "",
-    "adresseclient": "",
-    "idclient": "",
-    "mailcommercial": "",
-    "typepaiement": "",
-    "commentaire": "",
-    "parcelTypeLabel": "appartment",
-    "orientation": "",
-    "typology": "T5",
-    "floor": "RDC,R+1",
-    "price": "N.C",
-    "living space": "93.3",
-    "surfaceDetail": [
-        {
-            "name": "chambre_1",
-            "surface": 11.0,
-            "type": "BEDROOM"
+    "1": {
+        "parcelLabel": "MAGASIN_1",
+        "parcelTypeId": "magasin",
+        "parcelTypeLabel": "Magasin",
+        "orientation": "",
+        "typology": "Commercial",
+        "floor": "RDC,MEZZANINE,R+5",
+        "immeuble": "A",
+        "price": "N.C",
+        "living space": "83.0",
+        "surfaceDetail": [
+            {
+                "name": "SURFACE RDC",
+                "surface": 50.0,
+                "type": "FLOOR"
+            },
+            {
+                "name": "SURFACE MEZZANINE",
+                "surface": 33.0,
+                "type": "FLOOR"
+            },
+            {
+                "name": "SURFACE TOTAL",
+                "surface": 83.0,
+                "type": "FLOOR"
+            }
+        ],
+        "option": {
+            "balcony": false,
+            "terrace": false,
+            "garden": false,
+            "parking": false,
+            "winter garden": false,
+            "garage": false,
+            "loggia": false,
+            "duplex": true
         },
-        {
-            "name": "sejour",
-            "surface": 26.8,
-            "type": "LIVING_ROOM"
+        "tva": "",
+        "pinel": true,
+        "customData": null,
+        "state": "available",
+        "pageNumber": 1,
+        "validate": {
+            "is_valid": false,
+            "errors": [],
+            "warnings": []
         }
-    ],
-    "option": {
-        "balcony": false,
-        "terrace": true,
-        "garden": true,
-        "parking": false,
-        "winter garden": false,
-        "garage": false,
-        "loggia": false,
-        "duplex": true
-    },
-    "tva": "",
-    "pinel": true,
-    "customData": null,
-    "state": "available",
-    "validate": {
-        "is_valid": true,
-        "errors": [],
-        "warnings": []
     }
 }
 ```
 
 **Champs disponibles:**
-- `parcelLabel` - Référence du lot
-- `parcelTypeId` - Type de parcel (appartment)
-- `typology` - Typologie (T1, T2, T3, etc.)
-- `floor` - Étage(s)
-- `living space` - Surface habitable en m²
-- `surfaceDetail` - Tableau des pièces avec nom, surface, type
+- `parcelLabel` - Référence du lot (ex: "MAGASIN_1", "1", "2")
+- `parcelTypeId` - Type de parcel (appartment, maison, magasin)
+- `parcelTypeLabel` - Label du type (Appartement, Maison, Magasin)
+- `typology` - Typologie (T1, T2, T3, Commercial, etc.)
+- `floor` - Étage(s) (ex: "RDC,MEZZANINE,R+5")
+- `immeuble` - Building/Immeuble (ex: "A")
+- `living space` - Surface habitable totale en m²
+- `surfaceDetail` - Tableau des surfaces par étage:
+  - `SURFACE RDC` - Surface du rez-de-chaussée
+  - `SURFACE MEZZANINE` - Surface de la mezzanine
+  - `SURFACE TOTAL` - Surface totale (RDC + Mezzanine)
 - `option` - Options (balcon, terrasse, jardin, etc.)
 - `validate` - Résultats de validation:
   - `is_valid` - true si pas d'erreurs
   - `errors` - Liste des erreurs
   - `warnings` - Liste des avertissements
 
-**Multi-pages:** Le CLI supporte les PDFs multi-pages. SuperExtractor détecte automatiquement les pages avec le même numéro de lot et les combine.
+**Note:** Avec l'option `-a` (--all), les clés JSON sont réindexées séquentiellement (1, 2, 3...) tout en conservant le parcelLabel original.
 
 #### Mode Batch (plusieurs fichiers)
 
@@ -232,6 +246,25 @@ python -m src --batch pdfExample/ --method super --output results/
 ```bash
 python -m src --split pdfExample/A008.pdf --output output_pages/
 ```
+
+#### Diviser un PDF par page (page range)
+
+```bash
+# Extraire les pages 10 à 14 d'un PDF
+python -m src -s pdfExample/plaquette.pdf -o output_pages/ --start 10 --end 14
+
+# Extraire une seule page (page 5)
+python -m src -s pdfExample/plaquette.pdf -o page5.pdf --start 5 --end 5
+
+# Extraire à partir de la page 20 jusqu'à la fin
+python -m src -s pdfExample/plaquette.pdf -o output_pages/ --start 20
+```
+
+**Options disponibles:**
+- `--split`, `-s`: Activer le mode split
+- `--start`: Page de début (optionnel)
+- `--end`: Page de fin (optionnel)
+- `--output`, `-o`: Répertoire ou fichier de sortie
 
 #### Diviser un PDF par maison/lot
 
@@ -533,14 +566,3 @@ Pour toute question ou amélioration:
 1. Examiner les fichiers de debug
 2. Vérifier la qualité de l'image source
 3. Consulter les logs d'erreur
-
-## 🎯 Roadmap
-
-- [x] Support des PDFs multi-pages
-- [x] Détection automatique des zones de texte
-- [x] API REST pour intégration
-- [x] Base de données pour historique
-- [x] Machine Learning pour améliorer la détection
-- [ ] Export vers d'autres formats (Excel, CSV)
-- [x] Validation automatique des données
-- [ ] Interface de correction collaborative
