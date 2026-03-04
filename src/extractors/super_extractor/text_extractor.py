@@ -155,12 +155,22 @@ class TextExtractor:
                 pages_to_process = list(enumerate(doc))
             
             for pnum, page in pages_to_process:
-                # Convertir en image avec resolution plus elevee
-                pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
+                # Convertir en image avec resolution plus elevee (3x = ~300 DPI)
+                # Use 4x for very low quality / scanned PDFs
+                scale = 4  # Increased from 2 to 4 for better OCR on scanned images
+                pix = page.get_pixmap(matrix=fitz.Matrix(scale, scale))
                 img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
                 
-                # Preprocessing minimal - juste convertir en gris
+                # Preprocessing: convert to grayscale and enhance contrast
                 img_gray = img.convert('L')
+                
+                # Enhance contrast for better OCR on floor plans
+                enhancer = ImageEnhance.Contrast(img_gray)
+                img_gray = enhancer.enhance(1.5)  # Increase contrast by 50%
+                
+                # Sharpen the image
+                from PIL import ImageFilter
+                img_gray = img_gray.filter(ImageFilter.SHARPEN)
                 
                 # OCR avec donnees de position
                 data = pytesseract.image_to_data(

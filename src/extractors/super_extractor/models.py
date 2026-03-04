@@ -78,6 +78,7 @@ class ExtractionResult:
     parcel_label: str = ""  # Label du lot (ex: "M011")
     page_number: int = 0  # Numéro de page d'où vient l'extraction
     property_type: str = "appartment"
+    property_type_hint: str = ""  # Hint from metadata (e.g., "magasin" from MAGASIN reference)
     typology: str = ""
     floor: str = ""
     building: str = ""
@@ -158,6 +159,7 @@ class ExtractionResult:
                 "annex_space": str(self.annex_space if self.annex_space else self.annex_surface_calc),
                 "surfaceDetail": surface_detail,
                 "surfaceComposites": self.composites,
+                "multi_floor_surfaces": getattr(self, 'multi_floor_surfaces', {}),  # Add floor surfaces
                 "surfaceTotals": {
                     "habitable": self.living_space if self.living_space else self.interior_surface_calc,
                     "habitable_calc": self.interior_surface_calc,
@@ -238,5 +240,5 @@ class ExtractionResult:
 
     def _property_label(self) -> str:
         return {"appartment": "Appartement", "house": "Maison",
-                "commercial": "Commerce", "office": "Bureau"
+                "commercial": "Commerce", "magasin": "Magasin", "office": "Bureau"
                 }.get(self.property_type, "Appartement")

@@ -21,7 +21,7 @@ import argparse
 from pathlib import Path
 
 
-def split_pdf(input_pdf: str, output_dir: str, verbose: bool = False, by_house: bool = False):
+def split_pdf(input_pdf: str, output_dir: str, verbose: bool = False, by_house: bool = False, start_page: int = None, end_page: int = None):
     """Diviser un PDF en pages individuelles ou par maison/lot.
     
     Args:
@@ -29,6 +29,8 @@ def split_pdf(input_pdf: str, output_dir: str, verbose: bool = False, by_house: 
         output_dir: Repertoire de sortie pour les pages
         verbose: Mode verbeux
         by_house: Grouper les pages par maison/lot (memes references ensemble)
+        start_page: Page de debut (1-based, optionnel)
+        end_page: Page de fin (1-based, optionnel)
     """
     import fitz
     from collections import defaultdict
@@ -45,6 +47,39 @@ def split_pdf(input_pdf: str, output_dir: str, verbose: bool = False, by_house: 
     
     output_path.mkdir(parents=True, exist_ok=True)
     
+    # Handle page range extraction
+    if start_page is not None and end_page is not None:
+        with fitz.open(input_path) as doc:
+            page_count = doc.page_count
+            
+            # Validate page range
+            if start_page < 1:
+                start_page = 1
+            if end_page > page_count:
+                end_page = page_count
+            if start_page > end_page:
+                print(f"Erreur: La page de debut ({start_page}) ne peut pas etre superieure a la page de fin ({end_page})", file=sys.stderr)
+                sys.exit(1)
+            
+            # Convert to 0-based indices for fitz
+            from_page = start_page - 1
+            to_page = end_page - 1
+            
+            # Create new PDF with selected pages
+            new_pdf = fitz.open()
+            new_pdf.insert_pdf(doc, from_page=from_page, to_page=to_page)
+            
+            # Generate output filename
+            output_filename = f"{input_path.stem}_pages_{start_page}_to_{end_page}.pdf"
+            output_file = output_path / output_filename
+            
+            new_pdf.save(str(output_file))
+            new_pdf.close()
+            
+            print(f"[OK] PDF extrait: {end_page - start_page + 1} page(s) ({start_page}-{end_page}) -> {output_file}")
+        return
+    
+    # Original logic continues for by_house or regular split
     metadata_extractor = MetadataExtractor()
     
     if by_house:
@@ -235,6 +270,17 @@ def batch_process_files(paths: list, args):
                     combined = {}
                     for ref, result in all_results.items():
                         combined.update(result.to_legacy_format(include_raw_text=False))
+                    
+                    # DEBUG: Print keys before reindexing
+                    print(f"DEBUG: Keys before reindex: {list(combined.keys())}")
+                    
+                    # Renommer les clés pour utiliser des indices auto-incrementes
+                    # tout en preservant le parcelLabel original
+                    combined = _reindex_results(combined)
+                    
+                    # DEBUG: Print keys after reindexing
+                    print(f"DEBUG: Keys after reindex: {list(combined.keys())}")
+                    
                     file_result = combined
                 else:
                     result = super_extractor.extract(str(file_path))
@@ -317,6 +363,45 @@ def batch_process_files(paths: list, args):
         print(json.dumps(results, indent=2, ensure_ascii=False))
 
 
+def _reindex_results(combined: dict) -> dict:
+    """
+    Renomme les cles du dictionnaire pour utiliser des indices auto-incrementes (1, 2, 3...)
+    tout en preservant le parcelLabel original.
+    
+    Cela permet d'avoir des parcels avec le meme label (ex: MAGASIN 1 et APPARTEMENT 1)
+    sans conflit d'index dans le JSON de sortie.
+    """
+    reindexed = {}
+    index = 1
+    for key, value in combined.items():
+        # Try to get original parcelLabel from the value
+        original_label = value.get('parcelLabel', key) if isinstance(value, dict) else key
+        
+        # If the key has a prefix like "MAGASIN_1", extract just the number for parcelLabel
+        # The key keeps the prefix (MAGASIN_1) but parcelLabel should be just the number
+        if '_' in key and key.split('_')[0].isalpha():
+            # Key has a type prefix (e.g., "MAGASIN_1")
+            # Extract the numeric part for parcelLabel
+            parts = key.split('_')
+            if len(parts) >= 2 and parts[1].isdigit():
+                original_label = parts[1]
+        
+        # Creer la nouvelle cle avec l'index auto-incremente
+        new_key = str(index)
+        
+        # Copier les donnees en preservant le parcelLabel original
+        if isinstance(value, dict):
+            new_value = dict(value)
+            new_value['parcelLabel'] = original_label
+            reindexed[new_key] = new_value
+        else:
+            reindexed[new_key] = value
+        
+        index += 1
+    
+    return reindexed
+
+
 def main():
     """Point d'entree principal."""
     parser = argparse.ArgumentParser(
@@ -346,6 +431,20 @@ Exemples:
         '--by-house', '-bh',
         action='store_true',
         help='Grouper les pages par maison/lot (memes references ensemble)'
+    )
+    
+    # Page range for split mode
+    parser.add_argument(
+        '--start', '-st',
+        type=int,
+        default=None,
+        help='Page de debut (1-based, ex: 5)'
+    )
+    parser.add_argument(
+        '--end', '-en',
+        type=int,
+        default=None,
+        help='Page de fin (1-based, ex: 15)'
     )
     
     # Batch mode flag
@@ -399,7 +498,7 @@ Exemples:
             print("Erreur: Veuillez specifier un fichier PDF a diviser", file=sys.stderr)
             sys.exit(1)
         output_dir = args.output if args.output else 'output_pages'
-        split_pdf(args.input_pdf, output_dir, args.verbose, args.by_house)
+        split_pdf(args.input_pdf, output_dir, args.verbose, args.by_house, args.start, args.end)
         sys.exit(0)
     
     # Otherwise, use the original extraction logic

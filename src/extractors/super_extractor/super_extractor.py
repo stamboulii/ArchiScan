@@ -20,7 +20,7 @@ Usage:
 import re
 import logging
 from pathlib import Path
-from typing import Dict, Optional, Any, List
+from typing import Dict, Optional, Any, List, Callable
 
 from .models import RoomType, ExtractedRoom, ExtractionResult, EXTERIOR_ROOM_TYPES
 from .text_extractor import TextExtractor
@@ -191,6 +191,9 @@ class SuperExtractor:
         # Si on a plusieurs pages pour même référence, c'est probablement une maison multi-niveaux
         is_multi_page = len(results) > 1
         
+        # Conserver le property_type "magasin" s'il est déjà défini
+        original_property_type = results[0].property_type if results else "appartment"
+        
         # Prendre le premier comme base
         combined = results[0]
         
@@ -282,11 +285,28 @@ class SuperExtractor:
         combined.niveaux = niveaux if niveaux else combined._floor_to_niveaux(combined.floor)
         
         # Re-détecter le type de propriété après combinaison
-        combined.property_type = self._detect_property_type(combined.rooms, combined.floor)
+        # Conserve le type "magasin" s'il était déjà détecté (from first result)
+        # Also copy property_type_hint and typology to combined result
+        if original_property_type == "magasin":
+            combined.property_type = "magasin"
+            combined.property_type_hint = "magasin"
+        else:
+            # Use property_type_hint and typology from first result if available
+            property_hint = getattr(results[0], 'property_type_hint', '') if results else ''
+            # Also get typology which may contain "Commercial" or "Magasin" from metadata
+            typology_hint = getattr(results[0], 'typology', '') if results else ''
+            combined.property_type_hint = property_hint
+            combined.typology = typology_hint
+            combined.property_type = self._detect_property_type(combined.rooms, combined.floor, typology_hint=typology_hint, property_type_hint=property_hint)
         
         # ── Re-détecter la typologie sur l'ensemble des pièces combinées ──────
         # Important: la page RDC seule peut ne pas avoir de chambre → T1 erroné
-        combined.typology = self._detect_typology(combined.rooms)
+        # Also preserve Commercial/Magasin typology from metadata
+        if combined.typology and combined.typology.lower() in ['commercial', 'magasin', 'commerce']:
+            # Keep the Commercial typology from metadata
+            pass
+        else:
+            combined.typology = self._detect_typology(combined.rooms)
         
         # ── Effacer les erreurs stales (venant de pages individuelles) ─────────
         # et re-valider sur le résultat combiné complet
@@ -302,7 +322,7 @@ class SuperExtractor:
         
         return combined
     
-    def extract_all_pages(self, pdf_path: str, reference_hint: str = None) -> Dict[str, Any]:
+    def extract_all_pages(self, pdf_path: str, reference_hint: str = None, progress_callback: Callable[[int, int, str], None] = None) -> Dict[str, Any]:
         """
         Extrait toutes les pages d'un PDF multi-pages.
 
@@ -346,6 +366,9 @@ class SuperExtractor:
                 pdf_path, reference_hint, page_num, is_multipage_context=True
             )
             ref = result.reference if (result.reference and result.reference != "UNKNOWN")                   else f"PAGE_{page_num+1}"
+            # Call progress callback if provided
+            if progress_callback:
+                progress_callback(page_num + 1, page_count, ref)
 
             if current_ref is None:
                 # Start new run
@@ -646,22 +669,31 @@ class SuperExtractor:
                 r'\bT\d+\b',       # T1, T2, T3
                 r'\b\d+ pieces\b',  # 3 pieces
                 r'\bsurface\b',     # mot surface
+                r'\bMAGASIN\b',     # MAGASIN
+                r'\b\d+\b',        # Any number (for simple refs like "1", "2")
             ]
             
+            matched_patterns = []
             score = 0
             for pattern in lot_patterns:
                 if re.search(pattern, text, re.IGNORECASE):
                     score += 1
+                    matched_patterns.append(pattern)
             
             # Verifier les mots cles d'un plan
             plan_keywords = ['appartement', 'chambre', 'sejour', 'cuisine', 'sdb', 'wc', 
-                           'terrasse', 'balcon', 'etage', 'rdc', 'surface', 'habitable']
+                           'terrasse', 'balcon', 'etage', 'rdc', 'surface', 'habitable', 'magasin', 'commerce']
             keyword_count = sum(1 for kw in plan_keywords if kw in text.lower())
+            matching_keywords = [kw for kw in plan_keywords if kw in text.lower()]
             
             # Decision: c'est un plan si score >= 2 ou (score >= 1 et keyword_count >= 2)
             is_plan = score >= 2 or (score >= 1 and keyword_count >= 2)
             
-            logger.info(f"    Page {page_num + 1}: score={score}, keywords={keyword_count}, is_plan={is_plan}")
+            # Log details for debugging
+            logger.info(f"    📄 Page {page_num + 1}:")
+            logger.info(f"       Patterns matched ({score}): {matched_patterns}")
+            logger.info(f"       Keywords found ({keyword_count}): {matching_keywords}")
+            logger.info(f"       → Is plan: {is_plan}")
             
             return is_plan
             
@@ -883,7 +915,8 @@ class SuperExtractor:
         )
 
         result.reference = meta.get("reference", reference_hint or "UNKNOWN")
-        result.parcel_label = meta.get("reference", reference_hint or "")
+        # Use original_reference for parcelLabel (without MAGASIN_ prefix)
+        result.parcel_label = meta.get("original_reference", meta.get("reference", reference_hint or ""))
         result.floor = meta.get("floor", "")
         result.building = meta.get("building", "")
         result.promoter_detected = meta.get("promoter", "")
@@ -894,11 +927,34 @@ class SuperExtractor:
         result.surface_propriete = meta.get("surface_propriete", 0.0)
         result.surface_espaces_verts = meta.get("surface_espaces_verts", 0.0)
         
-        # Surfaces: spatial a priorité sur metadata
-        result.living_space = (
+        # Store multi-floor surfaces for surface detail display
+        result.multi_floor_surfaces = meta.get('multi_floor_surfaces', {})
+        
+        # Surfaces: spatial has priority over metadata
+        # Also check multi-floor surfaces (RDC + Mezzanine sum)
+        multi_floor_surfaces = meta.get('multi_floor_surfaces', {})
+        mezzanine_surface = multi_floor_surfaces.get('mezz', 0.0)  # Mezzanine surface if present
+        multi_floor_total = sum(multi_floor_surfaces.values()) if multi_floor_surfaces else 0.0
+        
+        # Get the base living space from spatial or metadata
+        base_living_space = (
             spatial_data.get("living_space")
             or meta.get("living_space", 0.0)
         )
+        
+        # For multi-floor properties (RDC + MEZ), add the mezzanine surface to get the total
+        # The declared living_space is typically just the RDC surface
+        if mezzanine_surface > 0 and base_living_space > 0:
+            # Add mezzanine to get total living space
+            result.living_space = base_living_space + mezzanine_surface
+        elif base_living_space > 0:
+            result.living_space = base_living_space
+        elif multi_floor_total > 0:
+            # No base living space, use multi-floor total
+            result.living_space = multi_floor_total
+        else:
+            result.living_space = base_living_space
+            
         result.annex_space = (
             spatial_data.get("annex_space")
             or meta.get("annex_space", 0.0)
@@ -925,16 +981,22 @@ class SuperExtractor:
         # Use meta hint only if it seems reasonable (not empty, matches bedroom count)
         bedrooms = sum(1 for r in rooms if r.room_type == RoomType.BEDROOM)
         if meta_typology and meta_typology != room_typology:
-            # Check if meta hint is close to what we'd expect
-            expected_from_rooms = f"T{bedrooms + 1}" if bedrooms > 0 else "Studio"
-            if meta_typology == expected_from_rooms:
+            # Accept Commercial/Magasin type from metadata (Moroccan floor plans)
+            if meta_typology.lower() in ['commercial', 'magasin', 'commerce']:
                 result.typology = meta_typology
+            # Check if meta hint is close to what we'd expect
             else:
-                logger.info(f"  ℹ️ Typology: meta_hint={meta_typology}, room_calc={room_typology}, using={room_typology}")
-                result.typology = room_typology
+                expected_from_rooms = f"T{bedrooms + 1}" if bedrooms > 0 else "Studio"
+                if meta_typology == expected_from_rooms:
+                    result.typology = meta_typology
+                else:
+                    logger.info(f"  ℹ️ Typology: meta_hint={meta_typology}, room_calc={room_typology}, using={room_typology}")
+                    result.typology = room_typology
         else:
             result.typology = room_typology
-        result.property_type = self._detect_property_type(rooms, result.floor)
+        # Store property_type_hint for later use when combining results
+        result.property_type_hint = meta.get("property_type_hint", "")
+        result.property_type = self._detect_property_type(rooms, result.floor, meta.get("typology_hint", ""), meta.get("property_type_hint", ""))
 
         # ── ÉTAPE 7a: Inférence chambre manquante ────────────
         # Si la surface calculée est inférieure à la surface déclarée d'exactement
@@ -1989,13 +2051,32 @@ class SuperExtractor:
         # T2 = 1 bedroom + living, T3 = 2 bedrooms + living, etc.
         return f"T{bedrooms + 1}"
 
-    def _detect_property_type(self, rooms, floor: str = ""):
+    def _detect_property_type(self, rooms, floor: str = "", typology_hint: str = "", property_type_hint: str = ""):
+        # Check for Commercial/Magasin type first (Moroccan floor plans)
+        # First check explicit property_type_hint (from MAGASIN reference or TYPE field)
+        if property_type_hint and property_type_hint.lower() in ['magasin', 'commercial']:
+            return property_type_hint.lower()
+        # Then check typology_hint for commercial keywords
+        if typology_hint and typology_hint.lower() in ['commercial', 'magasin', 'commerce']:
+            return "magasin"
+        
         has_garden = any(r.room_type == RoomType.GARDEN for r in rooms)
         has_cellar = any(r.room_type == RoomType.CELLAR for r in rooms)
         has_parking = any(r.room_type == RoomType.PARKING for r in rooms)
         
-        # Maison: a jardin OU cave OU parking OU plusieurs niveaux
-        is_multi_floor = floor and ("+" in floor or "R+1" in floor.upper() or "ETAGE" in floor.upper())
+        # Maison: a jardin OU cave OU parking OU plusieurs niveaux réels
+        # Only consider multi-floor if there are multiple floor indicators (e.g., "RDC+R+1" or "R+1,R+2")
+        # NOT just a single floor like "R+5" which is common for apartments
+        if floor:
+            floor_upper = floor.upper()
+            # Count occurrences of R+ or RDC to determine if truly multi-floor
+            r_floor_count = len(re.findall(r'\bR\+\d+\b', floor_upper))
+            has_rdc = 'RDC' in floor_upper
+            has_mezz = 'MEZ' in floor_upper
+            # Multi-floor: multiple R+ floors OR combination of RDC+R+ or RDC+MEZ
+            is_multi_floor = (r_floor_count > 1) or (has_rdc and (r_floor_count > 0 or has_mezz))
+        else:
+            is_multi_floor = False
         
         return "house" if (has_garden or has_cellar or has_parking or is_multi_floor) else "appartment"
 

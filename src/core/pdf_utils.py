@@ -218,6 +218,66 @@ def get_page_count(file_path: str) -> int:
     return 1
 
 
+def extract_page_range(
+    input_pdf: str,
+    output_pdf: str,
+    start_page: int,
+    end_page: int
+) -> bool:
+    """
+    Extrait une plage de pages d'un PDF vers un nouveau fichier.
+    
+    Args:
+        input_pdf: Chemin vers le PDF source
+        output_pdf: Chemin vers le fichier PDF de sortie
+        start_page: Page de debut (1-based)
+        end_page: Page de fin (1-based)
+        
+    Returns:
+        True si l'operation a reussi, False sinon
+    """
+    path = Path(input_pdf)
+    
+    if not path.exists():
+        logger.error(f"PDF introuvable: {input_pdf}")
+        return False
+    
+    try:
+        import fitz
+        doc = fitz.open(path)
+        page_count = doc.page_count
+        
+        # Validate page range (1-based to 0-based)
+        if start_page < 1:
+            start_page = 1
+        if end_page > page_count:
+            end_page = page_count
+        if start_page > end_page:
+            logger.error(f"Page de debut ({start_page}) superieure a la page de fin ({end_page})")
+            doc.close()
+            return False
+        
+        # Convert to 0-based indices
+        from_page = start_page - 1
+        to_page = end_page - 1
+        
+        # Create new PDF with selected pages
+        new_pdf = fitz.open()
+        new_pdf.insert_pdf(doc, from_page=from_page, to_page=to_page)
+        
+        # Save to output file
+        new_pdf.save(output_pdf)
+        new_pdf.close()
+        doc.close()
+        
+        logger.info(f"Extrait {end_page - start_page + 1} pages ({start_page}-{end_page}) vers {output_pdf}")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Erreur lors de l'extraction des pages: {e}")
+        return False
+
+
 if __name__ == "__main__":
     # Test basique
     import sys

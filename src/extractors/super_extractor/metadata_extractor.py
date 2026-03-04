@@ -12,12 +12,23 @@ logger = logging.getLogger(__name__)
 class MetadataExtractor:
 
     REF_PATTERNS = [
+        # Priorité 0: MAGASIN format with type prefix
+        r"MAGASIN\s*N[°o]\s*[:\s]*(\d+)",
+        r"MAGASIN\s*[:\s]*(\d+)",
+        r"MAGASIN\s+N[°o]\s*[:\s]*(\d+)",
         # Priorité 0: Logement code "A 101", "B 203"
         r"Logement\s*[:\s]*([A-Z]\s*\d{3,4})",
         r"\b([A-Z])\s(\d{3,4})\b",  # standalone "A 101"
         # Priorité 1: pattern explicite avec contexte
         r"Appartement\s+([A-Z]\d{2,4})",
         r"APPARTEMENT\s*[:\s]*([A-Z]\d{2,4})",
+        # Moroccan format: "APPARTEMENT N° : 17" or "APPARTEMENT N° 17"
+        r"APPARTEMENT\s*N[°o]\s*[:\s]*(\d+)",
+        r"APPARTEMENT\s*N[°o]\s*(\d+)",
+        r"APPARTEMENT\s*[:\s]*(\d+)",
+        r"Appartement\s+N[°o]\s*[:\s]*(\d+)",
+        # Moroccan MAGASIN format: "MAGASIN N° : 15"
+        # (Already handled above)
         r"LOT\s*[:\s]*([A-Z]?\d{2,4})",
         r"R[ÉE]F[ÉE]RENCE\s*[:\s]*(\w+)",
         # Priorité 1b: format Bâtiment-Lot "B2-402", "B1-101"
@@ -44,6 +55,11 @@ class MetadataExtractor:
         (r"\bEtage\s+(\d{3})\b", lambda m: m.group(1)),
         # Format NIV: "NIV 01", "NIV 02", etc. - common in French architectural plans
         (r"\bNIV\s*(\d{2,3})\b", lambda m: f"R+{int(m.group(1))-1}" if int(m.group(1)) > 0 else "RDC"),
+        # Moroccan SITUATION format: "REZ-DE-CHAUSSEE_MEZZANINE" -> "RDC+MEZ"
+        # Handle both "CHAUSSEE" and "CHAUSSÉE" and "CHAUSSÉÉ"
+        (r"REZ[- ]?DE[- ]?CHAUSS?E+[_\s]+MEZZANINE", "RDC+MEZ"),
+        # Format MEZZANINE (Moroccan)
+        (r"\bMEZZANINE\b", "MEZZANINE"),
         # Format français avec °: "4°ETAGE", "4° ETAGE", "4e ETAGE"
         (r"\b(\d+)°?\s*ETAGE\b", lambda m: f"R+{m.group(1)}"),
         # Combinaison RDC + ETAGE (indique une maison avec plusieurs niveaux)
@@ -71,7 +87,10 @@ class MetadataExtractor:
     ]
 
     BUILDING_PATTERNS = [
-        # Standalone building codes like "B2" in a list (higher priority)
+        # Full IMMEUBLE description: "IMMEUBLE A ETAGE 1", "immeuble à rez de chaussée"
+        # This must come FIRST to capture longer text before falling back to single letter
+        r"IMMEUBLE\s+([A-Za-zÀ-ÿ\s]{1,30})",
+        # Standalone building codes like "B2" in a list
         r"\b([A-Z]\d?)\s*-\d{3,4}\b",  # B2-403 -> extract B2
         r"BATIMENT\s*[:\s]*([A-Z]\d?)",
         r"B[ÂA]T\.?\s*[:\s]*([A-Z]\d?)",
@@ -96,8 +115,21 @@ class MetadataExtractor:
     }
 
     LIVING_SPACE_PATTERNS = [
-        r"TOTAL\s*SURFACE\s*HABITABLE\s*[:\s]*(\d+[\.,]\d+)",
-        r"SURFACE\s*HABITABLE\s*[:\s]*(\d+[\.,]\d+)",
+        r"TOTAL\s*SURFACE\s*HABITABLE\s*[:\s]*(\d+(?:[\.,]\d+)?)",
+        r"SURFACE\s*HABITABLE\s*[:\s]*(\d+(?:[\.,]\d+)?)",
+        # Moroccan/Vertex format: "SURFACE : 48 m2"
+        r"SURFACE\s*[:\s]*(\d+(?:[\.,]\d+)?)\s*m",
+        r"SURFACE\s*[:\s]*(\d+(?:[\.,]\d+)?)\s*m2",
+        # Moroccan format with floor: "SURFACE RDC : 26 m²", "SURFACE MEZZANINE : 16 m²"
+        # Use non-capturing group for floor part so group(1) is always the surface
+        r"SURFACE\s+(?:RDC|MEZ\w*)\s*[:\s]*(\d+(?:[\.,]\d+)?)\s*m?²?",
+    ]
+    
+    # Multi-floor surface patterns - sum all floor surfaces
+    MULTI_FLOOR_SPACE_PATTERNS = [
+        # Sum all "SURFACE RDC" and "SURFACE MEZZANINE" patterns
+        (r"SURFACE\s+RDC\s*[:\s]*(\d+(?:[\.,]\d+)?)", "rdc"),
+        (r"SURFACE\s+MEZ\w*\s*[:\s]*(\d+(?:[\.,]\d+)?)", "mezz"),
     ]
 
     ANNEX_SPACE_PATTERNS = [
@@ -152,10 +184,25 @@ class MetadataExtractor:
         
         # Extract program name
         program = self._extract_program(full_text)
-
+        
+        # Extract property type hint first (to use for reference prefix)
+        property_type_hint = self._extract_property_type_hint(full_text)
+        
+        # Extract reference
+        reference = self._extract_first(full_text, self.REF_PATTERNS,
+                                          reference_hint or "UNKNOWN")
+        
+        # Store the original reference before prefixing (for parcelLabel)
+        original_reference = reference
+        
+        # Prepend type prefix to avoid conflicts (e.g., MAGASIN_1 vs APPARTEMENT_1)
+        # But keep the original for parcelLabel
+        if property_type_hint == "magasin" and reference and reference.isdigit():
+            reference = f"MAGASIN_{reference}"
+        
         return {
-            "reference": self._extract_first(full_text, self.REF_PATTERNS,
-                                              reference_hint or "UNKNOWN"),
+            "reference": reference,
+            "original_reference": original_reference,  # Keep original for parcelLabel
             "floor": self._extract_floor(full_text),
             "building": self._extract_building(full_text),
             "promoter": self._detect_promoter(full_text),
@@ -163,10 +210,28 @@ class MetadataExtractor:
             "annex_space": self._extract_surface(full_text, self.ANNEX_SPACE_PATTERNS),
             "address": self._extract_address(full_text),
             "typology_hint": self._extract_typology_hint(full_text),
+            "property_type_hint": property_type_hint,
             "program": program,
             "surface_propriete": self._extract_surface(full_text, property_patterns),
             "surface_espaces_verts": self._extract_surface(full_text, self.GARDEN_SPACE_PATTERNS),
+            "multi_floor_surfaces": self._extract_multi_floor_surfaces(full_text),
         }
+
+    def _extract_multi_floor_surfaces(self, text: str) -> Dict[str, float]:
+        """Extract and sum surfaces from multiple floors (RDC + Mezzanine)."""
+        surfaces = {}
+        total = 0.0
+        for pattern, floor_name in self.MULTI_FLOOR_SPACE_PATTERNS:
+            matches = re.findall(pattern, text, re.IGNORECASE)
+            for match in matches:
+                try:
+                    val = float(match.replace(",", "."))
+                    surfaces[floor_name] = val
+                    total += val
+                except ValueError:
+                    pass
+        surfaces["total"] = total
+        return surfaces
 
     PROGRAM_PATTERNS = [
         # Direct patterns for common residence names - case insensitive
@@ -250,7 +315,8 @@ class MetadataExtractor:
                 # Rejeter si la ref est dans "L261-15" (article de loi)
                 if re.search(rf"\\b{re.escape(ref)}-\\d{{1,2}}\\b", text, re.IGNORECASE):
                     continue
-                if len(ref) >= 3 or re.match(r"^[A-Z]\d{2,}$", ref):
+                # Accept refs >= 3 chars OR pattern like A101 OR short numeric like 17, 1, 2 (for Moroccan floor plans)
+                if len(ref) >= 3 or re.match(r"^[A-Z]\d{2,}$", ref) or re.match(r"^\d{1,3}$", ref):
                     return ref
         return default
 
@@ -260,9 +326,14 @@ class MetadataExtractor:
             m = re.search(p, text, re.IGNORECASE)
             if m:
                 ref = m.group(1).strip()
+                if not ref:  # Handle optional group that didn't match
+                    continue
                 ref = re.sub(r'\s+', '', ref)
                 # Building codes are typically single letter + optional digit (B2, A1, etc.)
                 if re.match(r"^[A-Z]\d?$", ref):
+                    return ref
+                # Also accept longer IMMEUBLE descriptions like "A ETAGE 1"
+                if re.match(r"^[A-Za-zÀ-ÿ].*", ref):
                     return ref
         return ""
 
@@ -272,6 +343,12 @@ class MetadataExtractor:
         if len(all_floors) > 1:
             # Multiple floors found - return comma-separated for later processing
             return ",".join(all_floors)
+        # Check for Moroccan multi-floor in SITUATION field
+        # Pattern: "REZ-DE-CHAUSSEE_MEZZANINE" or similar
+        # Handle both "CHAUSSEE" and "CHAUSSÉE" and "CHAUSSÉÉ"
+        m = re.search(r"REZ[- ]?DE[- ]?CHAUSS?E+[_\s]+MEZZANINE", text, re.IGNORECASE)
+        if m:
+            return "RDC+MEZ"
         # Single floor or no floors - return the first match
         for pattern, val in self.FLOOR_PATTERNS:
             m = re.search(pattern, text, re.IGNORECASE)
@@ -283,16 +360,28 @@ class MetadataExtractor:
         """Extract all floor references from text (useful for multi-floor PDFs)."""
         floors = []
         seen = set()
+        
+        # Check for Moroccan multi-floor in SITUATION field first
+        # Handle both "CHAUSSEE" and "CHAUSSÉE" and "CHAUSSÉÉ"
+        m = re.search(r"REZ[- ]?DE[- ]?CHAUSS?E+[_\s]+MEZZANINE", text, re.IGNORECASE)
+        if m:
+            floors.append("RDC+MEZ")
+            seen.add("RDC+MEZ")
+        
         for pattern, val in self.FLOOR_PATTERNS:
             for m in re.finditer(pattern, text, re.IGNORECASE):
                 floor_val = val(m) if callable(val) else val
                 if floor_val and floor_val not in seen:
                     floors.append(floor_val)
                     seen.add(floor_val)
-        # Sort floors: RDC first, then R+1, R+2, etc.
+        # Sort floors: RDC first, then MEZ, then R+1, R+2, etc.
         def floor_sort_key(f):
             if f == "RDC":
                 return (0, 0)
+            if f == "MEZZANINE":
+                return (0, 1)
+            if f == "RDC+MEZ":
+                return (0, 2)
             m = re.match(r"R\+(\d+)", f)
             if m:
                 return (1, int(m.group(1)))
@@ -403,4 +492,46 @@ class MetadataExtractor:
         m = re.search(r"(\d+)\s*pi[èe]ces?", text, re.IGNORECASE)
         if m:
             return f"T{m.group(1)}"
+        
+        # Pattern: "TYPE : CHAMBRE + SALON + SDB + KITCHENETTE" (Moroccan/French floor plans)
+        # Count CHAMBRE/CHAMBRES as bedrooms, ignore SALON, SDB, KITCHENETTE
+        m = re.search(r"TYPE\s*[:\s]*(.+?)(?:\n|$)", text, re.IGNORECASE)
+        if m:
+            type_str = m.group(1).upper()
+            # Check for MAGASIN (shop/commercial) - special type
+            if "MAGASIN" in type_str or "COMMERCE" in type_str:
+                return "Commercial"
+            # Count CHAMBRE occurrences
+            chambre_count = len(re.findall(r"\bCHAMBRE\b", type_str))
+            # Also check for alternative names
+            chambre_count += len(re.findall(r"\bCHAMBER\b", type_str))
+            chambre_count += len(re.findall(r"\bCH\b", type_str))  # Common abbreviation
+            
+            if chambre_count > 0:
+                return f"T{chambre_count}"
+            # If no bedroom found but has SALON (living room), assume T1 (studio with living room)
+            elif "SALON" in type_str or "SEJOUR" in type_str:
+                return "T1"
+        
+        return ""
+
+    def _extract_property_type_hint(self, text: str) -> str:
+        """Extract property type hint from text (MAGASIN, COMMERCE, etc.)"""
+        text_upper = text.upper()
+        
+        # Check for MAGASIN in reference patterns
+        if re.search(r"\bMAGASIN\b", text_upper):
+            return "magasin"
+        
+        # Check for COMMERCE in TYPE field
+        m = re.search(r"TYPE\s*[:\s]*(.+?)(?:\n|$)", text, re.IGNORECASE)
+        if m:
+            type_str = m.group(1).upper()
+            if "MAGASIN" in type_str or "COMMERCE" in type_str:
+                return "magasin"
+        
+        # Check for commercial keywords in the text
+        if re.search(r"\b(BUREAU|COMMERCE|COMMERCIAL)\b", text_upper):
+            return "commercial"
+        
         return ""
