@@ -662,15 +662,20 @@ class SuperExtractor:
                 # Extraire texte OCR pour cette page seulement
                 text = self._extract_ocr_single_page(pdf_path, page_num)
             
-            # Indicateurs d'un plan d'architecture
+            # Indicateurs d'un plan d'architecture - plus de patterns specifiques
             lot_patterns = [
-                r'\b[A-Z]\d{3}\b',  # A008
-                r'\bLOT_\d+\b',    # LOT_1
+                r'\b[A-Z]\d{2,4}\b',  # A01, A001, A0001
+                r'\bLOT[_\s]?\d+\b',    # LOT_1, LOT 1
                 r'\bT\d+\b',       # T1, T2, T3
-                r'\b\d+ pieces\b',  # 3 pieces
-                r'\bsurface\b',     # mot surface
+                r'\b\d+\s*pieces?\b',  # 3 pieces, 3 piece
+                r'\bSURFACE\b',     # SURFACE
                 r'\bMAGASIN\b',     # MAGASIN
-                r'\b\d+\b',        # Any number (for simple refs like "1", "2")
+                r'\bAPPARTEMENT\b',  # APPARTEMENT
+                r'\bMAISON\b',     # MAISON
+                r'\bCOMMERCE\b',   # COMMERCE
+                r'\bIMMEUBLE\b',   # IMMEUBLE
+                r'\bBATIMENT\b',   # BATIMENT
+                r'\bETAGE\s*\d+\b',  # ETAGE 1, ETAGE 2
             ]
             
             matched_patterns = []
@@ -680,14 +685,17 @@ class SuperExtractor:
                     score += 1
                     matched_patterns.append(pattern)
             
-            # Verifier les mots cles d'un plan
+            # Verifier les mots cles d'un plan - necessite plus de mots cles
             plan_keywords = ['appartement', 'chambre', 'sejour', 'cuisine', 'sdb', 'wc', 
-                           'terrasse', 'balcon', 'etage', 'rdc', 'surface', 'habitable', 'magasin', 'commerce']
+                           'terrasse', 'balcon', 'etage', 'rdc', 'surface', 'habitable', 'magasin', 
+                           'commerce', 'maison', 'immeuble', 'batiment', 'niveau', 'rez', 'chal',
+                           'salon', 'douche', 'entree', 'hall', 'couloir', 'placard', 'cuisine']
             keyword_count = sum(1 for kw in plan_keywords if kw in text.lower())
             matching_keywords = [kw for kw in plan_keywords if kw in text.lower()]
             
-            # Decision: c'est un plan si score >= 2 ou (score >= 1 et keyword_count >= 2)
-            is_plan = score >= 2 or (score >= 1 and keyword_count >= 2)
+            # Decision: plus permissif - accepter avec 1 pattern ou 1 keyword
+            # pour capturer tous les formats de PDF architecturaux
+            is_plan = score >= 1 or keyword_count >= 1
             
             # Log details for debugging
             logger.info(f"    📄 Page {page_num + 1}:")

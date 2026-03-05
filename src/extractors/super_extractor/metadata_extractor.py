@@ -123,6 +123,8 @@ class MetadataExtractor:
         # Moroccan format with floor: "SURFACE RDC : 26 m²", "SURFACE MEZZANINE : 16 m²"
         # Use non-capturing group for floor part so group(1) is always the surface
         r"SURFACE\s+(?:RDC|MEZ\w*)\s*[:\s]*(\d+(?:[\.,]\d+)?)\s*m?²?",
+        # NEW: Moroccan format "SURFACE APPARTEMENT : 54 m2"
+        r"SURFACE\s+APPARTEMENT\s*[:\s]*(\d+(?:[\.,]\d+)?)\s*m?²?",
     ]
     
     # Multi-floor surface patterns - sum all floor surfaces
@@ -140,6 +142,8 @@ class MetadataExtractor:
         r"JARDIN\s+(\d+[\.,]\d+)",
         r"PORCHE\s+(\d+[\.,]\d+)",
         r"SURFACE\s*JARDIN\s*[:\s]*(\d+[\.,]\d+)",
+        # NEW: Moroccan format "SURFACE TERRASSE : 53 m2"
+        r"SURFACE\s*TERRASSE\s*[:\s]*(\d+(?:[\.,]\d+)?)\s*m?²?",
     ]
     
     # Nouvelles patterns pour surface propriété et espaces verts
@@ -195,16 +199,27 @@ class MetadataExtractor:
         # Store the original reference before prefixing (for parcelLabel)
         original_reference = reference
         
+        # Extract building for combining with unit number
+        building = self._extract_building(full_text)
+        
         # Prepend type prefix to avoid conflicts (e.g., MAGASIN_1 vs APPARTEMENT_1)
         # But keep the original for parcelLabel
         if property_type_hint == "magasin" and reference and reference.isdigit():
             reference = f"MAGASIN_{reference}"
         
+        # Combine building with unit number to avoid conflicts (e.g., "35" from building A, B, C all become unique)
+        # This fixes the issue where same unit numbers from different buildings get grouped together
+        elif building and reference and reference.isdigit():
+            # Clean building letter (take first character only)
+            building_letter = building.strip()[0].upper() if building.strip() else ""
+            if building_letter and building_letter.isalpha():
+                reference = f"{building_letter}{reference}"
+        
         return {
             "reference": reference,
             "original_reference": original_reference,  # Keep original for parcelLabel
             "floor": self._extract_floor(full_text),
-            "building": self._extract_building(full_text),
+            "building": building,
             "promoter": self._detect_promoter(full_text),
             "living_space": self._extract_surface(full_text, self.LIVING_SPACE_PATTERNS),
             "annex_space": self._extract_surface(full_text, self.ANNEX_SPACE_PATTERNS),

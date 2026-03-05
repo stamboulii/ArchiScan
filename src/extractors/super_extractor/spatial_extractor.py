@@ -20,7 +20,7 @@ class SpatialExtractor:
         "TOTAL EXTERIEURS", "TOTAL EXT",
     ]
     SKIP_KEYWORDS = [
-        "BATIMENT", "APPARTEMENT", "NIVEAU", "TYPE", "LEGENDE",
+        "BATIMENT", "APPARTEMENT", "NIVEAU", "LEGENDE",
         "DATE", "IND", "PLAN", "ECHELLE", "SCCV", "VENTE", "TOTAL",
         "SURF. LOT", "SURF.LOT", "N° LOT", "N°LOT", "LOT:",  # Filtres pour PDFs scannés
     ]
