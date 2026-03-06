@@ -695,7 +695,26 @@ class SuperExtractor:
             
             # Decision: plus permissif - accepter avec 1 pattern ou 1 keyword
             # pour capturer tous les formats de PDF architecturaux
+            # MAIS: reject pages with only building/floor hints but no actual parcel data
             is_plan = score >= 1 or keyword_count >= 1
+            
+            # Additional check: require actual parcel data (not just building/floor headers)
+            # Reject pages that only have "IMMEUBLE X" or "ETAGE Y" without actual parcel info
+            if is_plan:
+                # Must have actual parcel indicators
+                parcel_indicators = [
+                    r'\bSURFACE\b',
+                    r'\bAPPARTEMENT\s*N?\s*[:]?\s*\d+',  # APPARTEMENT 35 or APPARTEMENT N° 35
+                    r'\bMAGASIN\s*N?\s*[:]?\s*\d+',  # MAGASIN 1
+                    r'\b\d+\s*m²?\b',  # 48 m2
+                    r'\bTYPE\s*[:]',  # TYPE: CHAMBRE...
+                ]
+                has_parcel_data = any(re.search(p, text, re.IGNORECASE) for p in parcel_indicators)
+                
+                # If no parcel data, reject the page
+                if not has_parcel_data:
+                    is_plan = False
+                    logger.info(f"    📄 Page {page_num + 1}: rejected - no parcel data (only headers)")
             
             # Log details for debugging
             logger.info(f"    📄 Page {page_num + 1}:")
@@ -1004,7 +1023,7 @@ class SuperExtractor:
             result.typology = room_typology
         # Store property_type_hint for later use when combining results
         result.property_type_hint = meta.get("property_type_hint", "")
-        result.property_type = self._detect_property_type(rooms, result.floor, meta.get("typology_hint", ""), meta.get("property_type_hint", ""))
+        result.property_type = self._detect_property_type(rooms, result.floor, meta.get("typology_hint", ""), meta.get("property_type_hint", ""), primary_text)
 
         # ── ÉTAPE 7a: Inférence chambre manquante ────────────
         # Si la surface calculée est inférieure à la surface déclarée d'exactement
@@ -2059,7 +2078,7 @@ class SuperExtractor:
         # T2 = 1 bedroom + living, T3 = 2 bedrooms + living, etc.
         return f"T{bedrooms + 1}"
 
-    def _detect_property_type(self, rooms, floor: str = "", typology_hint: str = "", property_type_hint: str = ""):
+    def _detect_property_type(self, rooms, floor: str = "", typology_hint: str = "", property_type_hint: str = "", full_text: str = ""):
         # Check for Commercial/Magasin type first (Moroccan floor plans)
         # First check explicit property_type_hint (from MAGASIN reference or TYPE field)
         if property_type_hint and property_type_hint.lower() in ['magasin', 'commercial']:
@@ -2068,21 +2087,32 @@ class SuperExtractor:
         if typology_hint and typology_hint.lower() in ['commercial', 'magasin', 'commerce']:
             return "magasin"
         
+        # Also check full_text for MAGASIN keyword if provided
+        if full_text and re.search(r'\bMAGASIN\b', full_text.upper()):
+            return "magasin"
+        
+        # Check if floor string contains MAGASIN (e.g., "MAGASIN RDC")
+        if floor and 'MAGASIN' in floor.upper():
+            return "magasin"
+        
         has_garden = any(r.room_type == RoomType.GARDEN for r in rooms)
         has_cellar = any(r.room_type == RoomType.CELLAR for r in rooms)
         has_parking = any(r.room_type == RoomType.PARKING for r in rooms)
         
         # Maison: a jardin OU cave OU parking OU plusieurs niveaux réels
-        # Only consider multi-floor if there are multiple floor indicators (e.g., "RDC+R+1" or "R+1,R+2")
+        # Only consider multi-floor if there are multiple actual floor levels (e.g., "RDC+R+1" or "R+1,R+2")
         # NOT just a single floor like "R+5" which is common for apartments
+        # Also NOT RDC + Mezzanine - Mezzanine is just a half-floor in an apartment
+        # Also NOT RDC + R+5 alone - that's just a ground floor + upper floor in same apartment
         if floor:
             floor_upper = floor.upper()
-            # Count occurrences of R+ or RDC to determine if truly multi-floor
+            # Count occurrences of R+ (multiple R+ floors = multi-level)
             r_floor_count = len(re.findall(r'\bR\+\d+\b', floor_upper))
             has_rdc = 'RDC' in floor_upper
             has_mezz = 'MEZ' in floor_upper
-            # Multi-floor: multiple R+ floors OR combination of RDC+R+ or RDC+MEZ
-            is_multi_floor = (r_floor_count > 1) or (has_rdc and (r_floor_count > 0 or has_mezz))
+            # Multi-floor: only multiple R+ floors (e.g., R+1,R+2) OR actual duplex floors
+            # Not: single R+ floor, not RDC+MEZ, not RDC+R+5
+            is_multi_floor = r_floor_count > 1
         else:
             is_multi_floor = False
         

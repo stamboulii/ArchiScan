@@ -53,6 +53,8 @@ class MetadataExtractor:
         # Numeric floor codes: "Etage 001", "Etage 002" — keep as-is
         (r"\bEtage\b.{0,300}?\b(0\d{2})\b", lambda m: m.group(1)),  # "Etage ... 001"
         (r"\bEtage\s+(\d{3})\b", lambda m: m.group(1)),
+        # Format ETAGE: "ETAGE 1", "ETAGE 2" - direct floor number
+        (r"\bETAGE\s+(\d+)\b", lambda m: f"R+{m.group(1)}"),
         # Format NIV: "NIV 01", "NIV 02", etc. - common in French architectural plans
         (r"\bNIV\s*(\d{2,3})\b", lambda m: f"R+{int(m.group(1))-1}" if int(m.group(1)) > 0 else "RDC"),
         # Moroccan SITUATION format: "REZ-DE-CHAUSSEE_MEZZANINE" -> "RDC+MEZ"
