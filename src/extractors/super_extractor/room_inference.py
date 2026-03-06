@@ -110,6 +110,11 @@ class RoomInference:
         existing_surfaces = {round(r.surface, 2) for r in interior}
         if gap in existing_surfaces:
             return result
+        
+        # Don't infer bedroom if gap is too large (>15m²) - likely multiple rooms combined
+        if gap > 15.0:
+            logger.info(f"  ⏭️ Skip inference: gap={gap}m² too large for single bedroom")
+            return result
 
         logger.info(
             f"  🔧 Inférence: {inferred_name}={gap}m² "

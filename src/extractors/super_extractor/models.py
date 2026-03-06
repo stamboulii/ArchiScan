@@ -122,13 +122,30 @@ class ExtractionResult:
         
         surface_detail = {r.name_normalized: r.surface for r in self.rooms}
         
-        # Determiner les options
+        # Determine options
         has_garden  = (
             any(r.room_type == RoomType.GARDEN for r in self.rooms)
             or self.surface_espaces_verts > 0  # fallback: détecté dans les métadonnées
         )
         has_balcony = any(r.room_type == RoomType.BALCONY for r in self.rooms)
         has_terrace = any(r.room_type == RoomType.TERRACE for r in self.rooms)
+        
+        # Fallback: detect terrace and balcony from raw text if not found in rooms
+        # Also check for exterior spaces like "Terrasse", "Balcon", "Jardin", "Exterieur"
+        if self.raw_text:
+            raw_lower = self.raw_text.lower()
+            # Check for terrace
+            if not has_terrace:
+                has_terrace = 'terrasse' in raw_lower
+            # Check for balcony (also check for "Balcon" without accent)
+            if not has_balcony:
+                has_balcony = 'balcon' in raw_lower
+            # Check for garden
+            if not has_garden:
+                has_garden = 'jardin' in raw_lower or 'espaces verts' in raw_lower
+            # Check for exterior (balcony/terrace indicator)
+            if not has_balcony and not has_terrace:
+                has_balcony = 'exterieur' in raw_lower or 'ext\u00e9rieur' in raw_lower
         has_loggia  = any(r.room_type == RoomType.LOGGIA  for r in self.rooms)
         # Parking pur: type PARKING dont le nom normalisé NE contient PAS 'garage'
         has_parking = any(

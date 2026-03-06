@@ -13,7 +13,16 @@ logger = logging.getLogger(__name__)
 class SpatialExtractor:
 
     TOTAL_KEYWORDS = [
+        # French standard
         "TOTAL SURFACE HABITABLE", "SURFACE HABITABLE", "TOTAL SH",
+        # Additional surface indicators
+        "LOGEMENT", "LOGEMENT TOTAL", "SURFACE LOGEMENT",
+        "SURFACE TOTALE", "SURFACE TOTALE HABITABLE",
+        "TOTAL HABITABLE", "TOTAL SHAB", "SH TOTALE",
+        # Exterior totals (sometimes used as main surface)
+        "TOTAL EXTERIEUR", "TOTAL EXTÉRIEUR", "TOTAL EXT",
+        # Other common formats
+        "SURFACE TOT", "TOTALE SURFACE",
     ]
     ANNEX_KEYWORDS = [
         "TOTAL SURFACE ANNEXE", "SURFACE ANNEXE", "TOTAL ANNEXE",
@@ -186,10 +195,14 @@ class SpatialExtractor:
         surface_lines = []
         for line in target_lines:
             text = line["text"]
+            text_upper = text.upper()
             # Recherche de surface plus tolérante: autorise ? et autres caractères après m²
             if re.search(r"\d+[\.,]\d+\s*m\s*[²2\xa0]?[?]*", text, re.IGNORECASE):
                 surface_lines.append(line)
-            elif any(kw in text.upper() for kw in [
+            # INCLURE les lignes avec mots-clés TOTAL pour détecter la surface habitable
+            elif any(kw in text_upper for kw in self.TOTAL_KEYWORDS):
+                surface_lines.append(line)
+            elif any(kw in text_upper for kw in [
                 "CHAMBRE", "SEJOUR", "CUISINE", "SDB", "SDE", "WC",
                 "ENTREE", "ENTRÉÉ",  # avec accent
                 "BALCON", "CELLIER", "SALLE",
@@ -198,6 +211,10 @@ class SpatialExtractor:
                 "GARAGE", "BOX", "PARKING", "STATIONNEMENT",  # ← manquaient
                 "BUANDERIE", "LINGERIE", "PLACARD", "RANGEMENT",
                 "CAVE", "GRENIER", "REMISE", "LOCAL",
+                # Nouveaux mots-clés pour PDFs avec traductions anglais
+                "PIECE DE VIE", "PIÈCE DE VIE", "BAINS",
+                "DÉGT", "DG T", "PL.", "PL ",  # Circulation/Placard abreges
+                "SÉJOUR", "SÉJOUR/ CUISINE",
             ]):
                 surface_lines.append(line)
 
@@ -424,7 +441,11 @@ class SpatialExtractor:
             y_diff = abs(curr["y0"] - prev["y0"])
             x_diff = abs(curr["x0"] - prev["x0"])
             
-            if y_diff <= y_tol and x_diff <= x_tol:
+            # Pour les tables: si même Y (très proche), fusionner seulement si X est aussi proche
+            # et seulement pour les lignes qui semblent liées (nom+surface)
+            if y_diff <= 3 and x_diff <= 80:  # Très proche Y mais X doit être raisonnablement proche
+                current_group.append(curr)
+            elif y_diff <= y_tol and x_diff <= x_tol:
                 current_group.append(curr)
             else:
                 merged.append(self._combine_line_group(current_group))

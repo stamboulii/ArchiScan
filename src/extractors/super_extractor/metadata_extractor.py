@@ -16,9 +16,10 @@ class MetadataExtractor:
         r"MAGASIN\s*N[°o]\s*[:\s]*(\d+)",
         r"MAGASIN\s*[:\s]*(\d+)",
         r"MAGASIN\s+N[°o]\s*[:\s]*(\d+)",
-        # Priorité 0: Logement code "A 101", "B 203"
+        # Priorité 0: Logement code "A 101", "B 203" (but NOT single letter + newline + number)
         r"Logement\s*[:\s]*([A-Z]\s*\d{3,4})",
-        r"\b([A-Z])\s(\d{3,4})\b",  # standalone "A 101"
+        # Priorité 0: code avec tiret (A-53, C-53, etc.) - must come BEFORE standalone letter+number
+        r"\b([A-Z]-\d{2,4})\b",
         # Priorité 1: pattern explicite avec contexte
         r"Appartement\s+([A-Z]\d{2,4})",
         r"APPARTEMENT\s*[:\s]*([A-Z]\d{2,4})",
@@ -37,6 +38,8 @@ class MetadataExtractor:
         # Priorité 2: code seul (A008, B13, C234)
         r"\b([A-Z]\d{3,4})\b",
         r"\b([A-Z]\d{2})\b",  # ← REMETTRE mais avec blacklist
+        # Priorité 3: Standalone letter + space + number (A 101, B 203) - lower priority
+        r"\b([A-Z])\s+(\d{3,4})\b",
     ]
 
     REF_BLACKLIST = {"R1", "R2", "R3", "T1", "T2", "T3", "T4", "T5", "T6",
@@ -117,6 +120,10 @@ class MetadataExtractor:
     }
 
     LIVING_SPACE_PATTERNS = [
+        # LOGEMENT - primary keyword for total living space
+        r"LOGEMENT\s*[:\s]*(\d+(?:[\.,]\d+)?)",
+        r"LOGEMENT\s+(\d+(?:[\.,]\d+)?)",
+        # Total surface patterns
         r"TOTAL\s*SURFACE\s*HABITABLE\s*[:\s]*(\d+(?:[\.,]\d+)?)",
         r"SURFACE\s*HABITABLE\s*[:\s]*(\d+(?:[\.,]\d+)?)",
         # Moroccan/Vertex format: "SURFACE : 48 m2"
@@ -127,6 +134,8 @@ class MetadataExtractor:
         r"SURFACE\s+(?:RDC|MEZ\w*)\s*[:\s]*(\d+(?:[\.,]\d+)?)\s*m?²?",
         # NEW: Moroccan format "SURFACE APPARTEMENT : 54 m2"
         r"SURFACE\s+APPARTEMENT\s*[:\s]*(\d+(?:[\.,]\d+)?)\s*m?²?",
+        # Surface totale
+        r"SURFACE\s+TOTALE\s*[:\s]*(\d+(?:[\.,]\d+)?)",
     ]
     
     # Multi-floor surface patterns - sum all floor surfaces
@@ -195,8 +204,30 @@ class MetadataExtractor:
         property_type_hint = self._extract_property_type_hint(full_text)
         
         # Extract reference
-        reference = self._extract_first(full_text, self.REF_PATTERNS,
-                                          reference_hint or "UNKNOWN")
+        # First, try to use the reference_hint if provided
+        reference = None
+        if reference_hint and reference_hint not in ("UNKNOWN", ""):
+            # Check if the hint exists in the text (with various normalizations)
+            hint_normalized = reference_hint.upper().replace('-', '').replace(' ', '')
+            text_normalized = full_text.upper().replace('-', '').replace(' ', '')
+            
+            # Try various formats: C22, C-22, C 22
+            hint_variants = [
+                reference_hint,
+                reference_hint.replace('-', ''),
+                reference_hint.replace('-', ' '),
+                reference_hint.upper(),
+            ]
+            
+            for variant in hint_variants:
+                variant_normalized = variant.upper().replace('-', '').replace(' ', '')
+                if variant_normalized in text_normalized:
+                    reference = variant
+                    break
+        
+        # If hint not found or not provided, use pattern matching
+        if not reference:
+            reference = self._extract_first(full_text, self.REF_PATTERNS, reference_hint or "UNKNOWN")
         
         # Store the original reference before prefixing (for parcelLabel)
         original_reference = reference

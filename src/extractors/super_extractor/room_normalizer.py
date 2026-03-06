@@ -26,6 +26,9 @@ class RoomNormalizer:
             "sejour_cuisine", RoomType.LIVING_KITCHEN, False),
             (r"^PI[ÈE]CE\s*(DE\s*VIE|PRINCIPALE|A\s*VIVRE)",
             "sejour_cuisine", RoomType.LIVING_KITCHEN, False),
+            # Handle "Pièce de vie (Living room)" with parentheses translation
+            (r"^PI[ÈE]CE\s*(DE\s*VIE|PRINCIPALE|A\s*VIVRE)\s*\(.*?\)",
+            "sejour_cuisine", RoomType.LIVING_KITCHEN, False),
             (r"^(LIVING|ESPACE)\s*/?\s*(CUISINE|KITCHEN)",
             "sejour_cuisine", RoomType.LIVING_KITCHEN, False),
             # Séjour-Cuisine avec tiret (variante OCR/plan)
@@ -92,7 +95,7 @@ class RoomNormalizer:
             "rangement_{n}", RoomType.STORAGE, False),
             
             # === PI/Pl (placard abrege OCR) ===
-            (r"^(PI|PLC|PL)$",
+            (r"^(PI|PLC|PL\.?)$",
             "placard", RoomType.STORAGE, False),
 
             # ══════════════════════════════════════════
@@ -143,6 +146,9 @@ class RoomNormalizer:
             (r"^(SALLE\s*DE\s*BAINS?|SDB|S\.?\s*D\.?\s*B\.?|BAIN|BAINS)\s*(\d+)$",
             "salle_de_bain_{n}", RoomType.BATHROOM, False),
             (r"^(SALLE\s*DE\s*BAINS?|SDB|S\.?\s*D\.?\s*B\.?|BAIN|BAINS)$",
+            "salle_de_bain", RoomType.BATHROOM, False),
+            # Handle "Bains (Bathroom)" with parentheses translation
+            (r"^(SALLE\s*DE\s*BAINS?|BAIN|BAINS)\s*\(.*?\)$",
             "salle_de_bain", RoomType.BATHROOM, False),
             (r"^(SALLE\s*DE\s*BAINS?\s*PARENTALE)$",
             "salle_de_bain_1", RoomType.BATHROOM, False),
@@ -201,6 +207,10 @@ class RoomNormalizer:
             # EXTÉRIEUR - TERRASSE
             # ══════════════════════════════════════════
             (r"^TERRASSE\s*(\d*)$", "terrasse", RoomType.TERRACE, True),
+            # Terrasse with unit code like "Terrasse C01" (surface may be on next line)
+            (r"^TERRASSE\s+[A-Za-z0-9_-]+", "terrasse", RoomType.TERRACE, True),
+            # Terrasse with surface on same line
+            (r"^TERRASSE\s+[A-Za-z0-9_-]+.*?(\d+[\.,]\d+)", "terrasse", RoomType.TERRACE, True),
             # Terrasse avec jardinière (format "TERRASSE+JARDINIERE")
             (r"^TERRASSE\s*\+\s*(JARDINIERE|JARDIN[IÈ]RE|JARDIN)\s*(\d*)$",
             "terrasse", RoomType.TERRACE, True),
@@ -284,7 +294,8 @@ class RoomNormalizer:
         name_clean = re.sub(r"^(MI\d+|M\d+|LOT_?\d+|[A-Z]\d{2,})\s+", "", name_clean)
         
         # Supprimer les parenthèses mais garder le contenu (format OCR: "(Garage)" -> "Garage")
-        name_clean = re.sub(r"\(?(.+?)\)?", r"\1", name_clean).strip()
+        # Handle "Pièce de vie (Living room)" - parenthèses partout dans la chaîne
+        name_clean = re.sub(r"\([^)]*\)", "", name_clean).strip()
         
         # Supprimer les préfixes comme "m2" (format OCR corrompu: "m2 Entrée")
         name_clean = re.sub(r"^M2\s+", "", name_clean).strip()
@@ -296,6 +307,8 @@ class RoomNormalizer:
         # ── Corrections OCR systématiques ──────────────────────────────────
         # "DOT" ou "DAT" → "DGT" (g lu comme o ou a par l'OCR)
         name_clean = re.sub(r"\bD[OA]T\b", "DGT", name_clean)
+        # "Dgt" → "DGT" (minuscule t lu comme t par l'OCR), with or without trailing dot
+        name_clean = re.sub(r"\bDgt\.?\b", "DGT", name_clean, flags=re.IGNORECASE)
         # "PI" → "PL" quand c'est un placard abrégé (l minuscule lu comme I majuscule)
         # Règle: PI seul, ou après +/espace, suivi d'un point ou fin de mot
         # Exclure: PIECE, PLAN, PISCINE, etc. (PI suivi d'une lettre autre que . ou fin)
