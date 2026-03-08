@@ -54,7 +54,78 @@ setup_logging()
 from src.extractors.super_extractor import SuperExtractor
 
 
-def extract_to_json(pdf_path: str, reference: str = None, extract_all: bool = False) -> dict:
+def _reindex_keys(output: dict) -> dict:
+    """Reindex keys from format like 'F37' to 'F501' (Building + Floor + Unit)."""
+    if not output:
+        return output
+    
+    # First, group by building and floor to assign sequential apartment numbers
+    # Key format: building + floor + sequential_number
+    groups = {}  # (building, floor, prefix) -> list of (original_key, value)
+    
+    for key, value in list(output.items()):
+        floor = value.get('floor', '0') if isinstance(value, dict) else '0'
+        
+        # Handle MAGASIN keys - convert to A5M01 format (replace original)
+        if '_' in key and key.startswith('MAGASIN_'):
+            num = key.split('_')[1] if '_' in key else '1'
+            new_key = f"A{floor}M{int(num):02d}"
+            # Replace the original key with the new key
+            if new_key != key:
+                output[new_key] = value
+                del output[key]
+            continue
+        
+        # Handle format like F37 -> F501 (Building + Floor + sequential number starting at 01)
+        # But only reindex if the key doesn't already look like F701 format
+        if len(key) >= 2 and key[0].isalpha() and key[0].isupper():
+            building = key[0]
+            remaining = key[1:]
+            # Only reindex if remaining is digits but NOT already in correct format
+            # (e.g., don't reindex C71 to C701)
+            if remaining.isdigit():
+                # Check if already looks like building+floor+2digit (e.g., C71 = C+7+01)
+                if len(remaining) >= 2 and remaining[-2:].isdigit():
+                    # Already looks correct, keep original
+                    continue
+                group_key = (building, floor, 'apt')
+                if group_key not in groups:
+                    groups[group_key] = []
+                groups[group_key].append((key, value))
+        else:
+            # Keep original key for unknown formats
+            pass
+    
+    # Assign sequential numbers within each group
+    reindexed = {}
+    for (building, floor, prefix), items in groups.items():
+        # Sort by original key (F37, F38, etc.)
+        items_sorted = sorted(items, key=lambda x: x[0])
+        for seq_num, (orig_key, value) in enumerate(items_sorted, start=1):
+            new_key = f"{building}{floor}{seq_num:02d}"
+            reindexed[new_key] = value
+    
+    # Add keys that weren't reindexed (keep original key)
+    for key, value in output.items():
+        if key not in reindexed:
+            reindexed[key] = value
+    
+    # Add MAGASIN keys with proper format (replace original, don't duplicate)
+    for key in list(output.keys()):  # Use list() to avoid modification during iteration
+        if key.startswith('MAGASIN_'):
+            value = output[key]
+            floor = value.get('floor', '0') if isinstance(value, dict) else '0'
+            num = key.split('_')[1] if '_' in key else '1'
+            new_key = f"A{floor}M{int(num):02d}"
+            # Replace the original key with the new key
+            if new_key != key:
+                output[new_key] = value
+                del output[key]
+    
+    return reindexed
+
+
+def extract_to_json(pdf_path: str, reference: str = None, extract_all: bool = False, show_progress: bool = False) -> dict:
     """
     Extract data from PDF and return clean JSON in parcel format.
     
@@ -62,22 +133,59 @@ def extract_to_json(pdf_path: str, reference: str = None, extract_all: bool = Fa
         pdf_path: Path to PDF file
         reference: Reference hint (optional)
         extract_all: If True, extract ALL lots from multi-page PDF
+        show_progress: If True, show progress bar during extraction
     
     Returns:
         Single dict for single lot, or dict with all lots for multi-page PDF
     """
+    from tqdm import tqdm
+    
     extractor = SuperExtractor()
+    
+    # Progress callback for tqdm
+    pbar = None
+    def progress_callback(current: int, total: int, message: str):
+        if pbar is not None:
+            pbar.set_description(f"Processing page {current}/{total}")
+            pbar.update(1)
+            pbar.refresh()
     
     if extract_all:
         # Extract all pages/lots
-        all_results = extractor.extract_all_pages(pdf_path, reference)
+        if show_progress:
+            import fitz
+            doc = fitz.open(pdf_path)
+            page_count = len(doc)
+            doc.close()
+            print(f"Starting extraction of {page_count} pages...")
+            with tqdm(total=page_count, desc="Extracting pages", unit="page", leave=True) as pbar:
+                all_results = extractor.extract_all_pages(pdf_path, reference, progress_callback)
+        else:
+            all_results = extractor.extract_all_pages(pdf_path, reference)
         
         if not all_results:
             return {"error": "No plans found in PDF"}
         
         # Convert all results to JSON format
         output = {}
-        for ref, result in all_results.items():
+        # If a specific reference was requested, try to find matching key by normalizing
+        ref_normalized = reference.replace('-', '').replace(' ', '').upper() if reference else None
+        
+        # Find matching key in all_results (normalized comparison)
+        refs_to_process = []
+        if ref_normalized:
+            for key in all_results.keys():
+                if key.replace('-', '').replace(' ', '').upper() == ref_normalized:
+                    refs_to_process = [key]
+                    break
+        if not refs_to_process:
+            # No match found, use all keys
+            refs_to_process = list(all_results.keys())
+        
+        for ref in refs_to_process:
+            if ref not in all_results:
+                continue
+            result = all_results[ref]
             # Handle nested floor results (duplex/maison)
             if isinstance(result, dict):
                 # This is a dict of floor results: {"A18_R+1": result1, "A18_R+2": result2}
@@ -88,33 +196,45 @@ def extract_to_json(pdf_path: str, reference: str = None, extract_all: bool = Fa
                         # Get the inner dict using the reference as key
                         inner_key = floor_result.reference if floor_result.reference else floor_ref
                         if inner_key in result_dict:
-                            parcel_data = _build_parcel_data(result_dict[inner_key])
+                            parcel_data = _build_parcel_data(result_dict[inner_key], inner_key)
                         else:
                             # Get first key if reference not found
                             first_key = list(result_dict.keys())[0]
-                            parcel_data = _build_parcel_data(result_dict[first_key])
+                            parcel_data = _build_parcel_data(result_dict[first_key], first_key)
                     else:
                         # Already a dict
-                        parcel_data = _build_parcel_data(floor_result)
+                        parcel_data = _build_parcel_data(floor_result, floor_ref)
                     parcel_data["floor"] = floor_ref
                     output[floor_ref] = parcel_data
             elif hasattr(result, 'to_legacy_format'):
                 # to_legacy_format returns {ref: {...}}, extract inner dict
                 result_dict = result.to_legacy_format()
-                # Get the inner dict using the reference as key
+                # Always use the reference_hint (ref) as the key when provided
+                # This ensures consistent output keys like "C71" instead of "C701"
+                data_ref = ref  # Default to using ref
                 if ref in result_dict:
-                    parcel_data = _build_parcel_data(result_dict[ref])
+                    parcel_data = _build_parcel_data(result_dict[ref], ref)
                 else:
-                    # Get first key if reference not found
-                    first_key = list(result_dict.keys())[0]
-                    parcel_data = _build_parcel_data(result_dict[first_key])
+                    # Try to find a matching key by normalizing
+                    ref_normalized = ref.replace('-', '').replace(' ', '')
+                    matched = False
+                    for key in result_dict.keys():
+                        if key.replace('-', '').replace(' ', '') == ref_normalized:
+                            # Use the matched key's data but keep original ref as output key
+                            parcel_data = _build_parcel_data(result_dict[key], ref)
+                            matched = True
+                            break
+                    if not matched:
+                        # Use first key as fallback - but still use ref as output key
+                        first_key = list(result_dict.keys())[0]
+                        parcel_data = _build_parcel_data(result_dict[first_key], ref)
                 output[ref] = parcel_data
             else:
                 # Already a dict
-                parcel_data = _build_parcel_data(result)
+                parcel_data = _build_parcel_data(result, ref)
                 output[ref] = parcel_data
         
-        return output
+        return _reindex_keys(output)
     else:
         # Single extraction (default behavior)
         result = extractor.extract(pdf_path, reference)
@@ -124,11 +244,52 @@ def extract_to_json(pdf_path: str, reference: str = None, extract_all: bool = Fa
         else:
             result_dict = result
         
-        return _build_parcel_data(result_dict)
+        # Try to get reference from result_dict keys
+        key = reference
+        if not key and isinstance(result_dict, dict) and result_dict:
+            key = list(result_dict.keys())[0] if result_dict else None
+        
+        # If reference doesn't match any key in result_dict, try to find a close match
+        if key and isinstance(result_dict, dict) and key not in result_dict:
+            # Try normalized versions (with/without hyphen, etc.)
+            key_normalized = key.replace('-', '').replace(' ', '')
+            for k in result_dict.keys():
+                k_normalized = k.replace('-', '').replace(' ', '')
+                if k_normalized == key_normalized:
+                    key = k
+                    break
+        
+        result = _build_parcel_data(result_dict, key)
+        # For single extraction, wrap in dict and reindex
+        return _reindex_keys({key: result}) if key else result
 
 
-def _build_parcel_data(result) -> dict:
+def _build_parcel_data(result, key=None) -> dict:
     """Build parcel data dict from extraction result (object or dict)."""
+    # Handle nested dict format: {'C01': {data}} where key is passed separately
+    inner_result = result
+    if key and key in result and isinstance(result[key], dict):
+        inner_result = result[key]
+        
+        # Check if inner_result is a multi-floor nested structure (e.g., {'C01_RDC': {...}, 'C01_R+1': {...}})
+        # In this case, we need to pick one floor to use for parcel data
+        if isinstance(inner_result, dict):
+            # Look for floor keys (containing 'RDC', 'R+', 'REZ', etc.)
+            floor_keys = [k for k in inner_result.keys() if isinstance(k, str) and (
+                'RDC' in k.upper() or 'R+' in k.upper() or 'REZ' in k.upper() or 
+                any(x in k.upper() for x in ['MEZZ', 'ETAGE', 'GROUND'])
+            )]
+            if floor_keys:
+                # Prefer ground floor (RDC/REZ) over upper floors
+                ground_floor_keys = [k for k in floor_keys if 'RDC' in k.upper() or 'REZ' in k.upper()]
+                if ground_floor_keys:
+                    selected_floor = ground_floor_keys[0]
+                else:
+                    # Sort to get R+1 before R+2, etc.
+                    sorted_floors = sorted(floor_keys, key=lambda x: int(x.split('R+')[-1]) if 'R+' in x.upper() and x.split('R+')[-1].isdigit() else 0)
+                    selected_floor = sorted_floors[0] if sorted_floors else floor_keys[0]
+                inner_result = inner_result[selected_floor]
+    
     # Handle both dict and object results
     if hasattr(result, 'reference'):
         # It's an ExtractionResult object
@@ -141,12 +302,38 @@ def _build_parcel_data(result) -> dict:
         validation_warnings = result.validation_warnings
     else:
         # It's a dict - check for different key formats
-        ref = result.get('reference', '')
-        typology = result.get('typology', '')
-        floor = result.get('floor', '')
+        # Handle nested dict format: {'C01': {data}} where key is passed separately
+        inner_result = result
+        if key and key in result and isinstance(result[key], dict):
+            inner_result = result[key]
+        
+        # Check if inner_result is a multi-floor nested structure (e.g., {'C01_RDC': {...}, 'C01_R+1': {...}})
+        # This can happen in two cases:
+        # 1. key was found and result[key] was the nested structure
+        # 2. key was NOT found but result itself is the nested structure (e.g., to_legacy_format returns {'C03': {'C03_RDC': {...}, 'C03_R+1': {...}}})
+        if isinstance(inner_result, dict):
+            # Look for floor keys (containing 'RDC', 'R+', 'REZ', etc.)
+            floor_keys = [k for k in inner_result.keys() if isinstance(k, str) and (
+                'RDC' in k.upper() or 'R+' in k.upper() or 'REZ' in k.upper() or 
+                any(x in k.upper() for x in ['MEZZ', 'ETAGE', 'GROUND'])
+            )]
+            if floor_keys:
+                # Prefer ground floor (RDC/REZ) over upper floors
+                ground_floor_keys = [k for k in floor_keys if 'RDC' in k.upper() or 'REZ' in k.upper()]
+                if ground_floor_keys:
+                    selected_floor = ground_floor_keys[0]
+                else:
+                    # Sort to get R+1 before R+2, etc.
+                    sorted_floors = sorted(floor_keys, key=lambda x: int(x.split('R+')[-1]) if 'R+' in x.upper() and x.split('R+')[-1].isdigit() else 0)
+                    selected_floor = sorted_floors[0] if sorted_floors else floor_keys[0]
+                inner_result = inner_result[selected_floor]
+        
+        ref = inner_result.get('reference', '')
+        typology = inner_result.get('typology', '')
+        floor = inner_result.get('floor', '')
         
         # Handle living_space - can be string or float
-        living_space = result.get('living_space', 0)
+        living_space = inner_result.get('living_space', 0)
         if isinstance(living_space, str):
             try:
                 living_space = float(living_space)
@@ -154,10 +341,10 @@ def _build_parcel_data(result) -> dict:
                 living_space = 0
         
         # Handle rooms - can be in 'rooms' or 'surfaceDetail' (which is a dict, not list)
-        rooms = result.get('rooms', [])
-        if not rooms and 'surfaceDetail' in result:
+        rooms = inner_result.get('rooms', [])
+        if not rooms and 'surfaceDetail' in inner_result:
             # surfaceDetail is a dict {name: surface}, convert to list format
-            surface_detail_dict = result.get('surfaceDetail', {})
+            surface_detail_dict = inner_result.get('surfaceDetail', {})
             rooms = []
             for name, surface in surface_detail_dict.items():
                 rooms.append({
@@ -167,39 +354,77 @@ def _build_parcel_data(result) -> dict:
                     'is_exterior': False
                 })
         
-        validation_errors = result.get('validation_errors', result.get('_validation', {}).get('errors', []))
-        validation_warnings = result.get('validation_warnings', result.get('_validation', {}).get('warnings', []))
+        validation_errors = inner_result.get('validation_errors', inner_result.get('_validation', {}).get('errors', []))
+        validation_warnings = inner_result.get('validation_warnings', inner_result.get('_validation', {}).get('warnings', []))
+    
+    # Use key as parcelLabel if ref is empty
+    parcel_label = ref or key or ""
+    
+    # Convert floor to numeric: R+5 -> 5, RDC -> 0, etc.
+    floor_numeric = floor
+    if floor:
+        import re
+        floor_upper = floor.upper()
+        
+        # Check for ground floor first (RDC, REZ-DE-CHAUSSEE, or RDC+MEZ)
+        # If the parcel is on ground floor, use 0 regardless of other floors mentioned
+        if 'RDC' in floor_upper or 'REZ' in floor_upper:
+            # Ground floor (with or without mezzanine) = floor 0
+            floor_numeric = '0'
+        else:
+            # No ground floor - check for R+ number
+            floor_match = re.search(r'R\+(\d+)', floor_upper)
+            if floor_match:
+                floor_numeric = floor_match.group(1)
     
     # Build clean JSON structure
     parcel_data = {
-        "parcelLabel": ref or "",
-        "parcelTypeId": result.get('parcelTypeId', 'appartment') if hasattr(result, 'get') else 'appartment',
-        "parcelTypeLabel": result.get('parcelTypeLabel', 'Appartement') if hasattr(result, 'get') else 'Appartement',
+        "parcelLabel": parcel_label,
+        "parcelTypeId": result.get('parcelTypeId', result.get('property_type', 'appartment')) if hasattr(result, 'get') else getattr(result, 'property_type', 'appartment'),
+        "parcelTypeLabel": result.get('parcelTypeLabel', result.get('property_type', 'Appartement')) if hasattr(result, 'get') else getattr(result, '_property_label', lambda: 'Appartement')(),
         "orientation": result.get('orientation', '') if hasattr(result, 'get') else '',
         "typology": typology or "",
-        "floor": floor or "",
+        "floor": floor_numeric or "",
         "price": "N.C",
         "living space": str(living_space) if living_space else "0",
-        "surfaceDetail": _build_surface_detail(rooms),
-        "option": _build_options(rooms, floor),
+        "surfaceDetail": _build_surface_detail(rooms, result),
+        "option": inner_result.get('option', _build_options(rooms, floor)),
         "tva": "",
-        "pinel": True,
-        "customData": None,
-        "state": "available",
-        # Validation fields
-        "validate": {
-            "is_valid": len(validation_errors) == 0,
-            "errors": validation_errors,
-            "warnings": validation_warnings,
-        },
     }
     
     return parcel_data
 
 
-def _build_surface_detail(rooms: list) -> list:
-    """Build surface detail array from rooms list."""
-    surfaces = []
+def _build_surface_detail(rooms: list, result=None) -> dict:
+    """Build surface detail dictionary from rooms list."""
+    surfaces = {}
+    
+    # Add multi-floor surfaces (RDC, MEZZANINE, etc.) if available
+    multi_floor_surfaces = {}
+    if result is not None:
+        if hasattr(result, 'get'):
+            multi_floor_surfaces = result.get('multi_floor_surfaces', {})
+        else:
+            multi_floor_surfaces = getattr(result, 'multi_floor_surfaces', {})
+    
+    # If we have multi_floor_surfaces with data, use those instead of room surfaces
+    if multi_floor_surfaces and any(v > 0 for v in multi_floor_surfaces.values()):
+        floor_labels = {'rdc': 'SURFACE RDC', 'mezz': 'SURFACE MEZZANINE', 'r+1': 'SURFACE R+1', 'r+2': 'SURFACE R+2', 'r+3': 'SURFACE R+3', 'r+4': 'SURFACE R+4', 'r+5': 'SURFACE R+5'}
+        for floor_key, surface in multi_floor_surfaces.items():
+            # Skip 'total' key - we'll add it ourselves
+            if floor_key.lower() == 'total':
+                continue
+            if surface and surface > 0:
+                label = floor_labels.get(floor_key.lower(), f'SURFACE {floor_key}')
+                surfaces[label] = float(surface)
+        
+        # Add SURFACE TOTAL only once if there's more than one surface
+        if len(surfaces) > 1:
+            total = sum(surfaces.values())
+            surfaces["SURFACE TOTAL"] = total
+        return surfaces
+    
+    # Otherwise, use room-based surfaces
     for room in rooms:
         # Handle both dict and object rooms
         if isinstance(room, dict):
@@ -215,12 +440,14 @@ def _build_surface_detail(rooms: list) -> list:
             room_type = room.room_type.name if hasattr(room.room_type, 'name') else str(room.room_type)
             is_exterior = room.is_exterior
         
-        if not is_exterior:
-            surfaces.append({
-                "name": name,
-                "surface": surface,
-                "type": room_type
-            })
+        if not is_exterior and surface and surface > 0:
+            surfaces[f"SURFACE {name.upper()}"] = float(surface)
+    
+    # Add total if there's more than one surface
+    if len(surfaces) > 1:
+        total = sum(surfaces.values())
+        surfaces["SURFACE TOTAL"] = total
+    
     return surfaces
 
 
@@ -292,6 +519,119 @@ def _build_options(rooms: list, floor: str = None) -> dict:
     }
 
 
+def _handle_batch_mode(args):
+    """Handle batch processing of multiple PDF files."""
+    from tqdm import tqdm
+    import os
+    
+    input_path = Path(args.pdf_path)
+    
+    # Get list of PDF files
+    if input_path.is_dir():
+        pdf_files = list(input_path.glob("*.pdf")) + list(input_path.glob("*.PDF"))
+        base_dir = input_path
+    elif input_path.is_file() and input_path.suffix.lower() == '.pdf':
+        # Multiple files passed as arguments
+        pdf_files = [input_path]
+        base_dir = input_path.parent
+    else:
+        print(f"Error: Invalid path: {input_path}", file=sys.stderr)
+        sys.exit(1)
+    
+    if not pdf_files:
+        print(f"Error: No PDF files found in {input_path}", file=sys.stderr)
+        sys.exit(1)
+    
+    # Output directory
+    output_dir = Path(args.output_dir) if args.output_dir else base_dir
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Check if merge mode
+    merge_mode = getattr(args, 'merge', False)
+    
+    print(f"Batch mode: Found {len(pdf_files)} PDF file(s)")
+    print(f"Output directory: {output_dir}")
+    if merge_mode:
+        print(f"Merge mode: ON - all results will be combined into one file")
+    
+    # Process each file
+    results = {}
+    merged_data = {}  # For merge mode
+    for pdf_file in tqdm(pdf_files, desc="Processing PDFs", unit="file"):
+        try:
+            print(f"\n--- Processing: {pdf_file.name} ---")
+            
+            # Extract data
+            parcel_data = extract_to_json(
+                str(pdf_file), 
+                args.reference, 
+                args.all, 
+                args.verbose
+            )
+            
+            if merge_mode:
+                # Add all parcels to merged_data with source filename as prefix
+                for key, parcel in parcel_data.items():
+                    # Add source info to each parcel
+                    parcel["_source_file"] = pdf_file.name
+                    # Create unique key: filename_key
+                    unique_key = f"{pdf_file.stem}_{key}"
+                    merged_data[unique_key] = parcel
+                
+                results[pdf_file.name] = {
+                    "status": "success",
+                    "parcels": len(parcel_data) if isinstance(parcel_data, dict) else 0
+                }
+                print(f"-> Added {len(parcel_data)} parcels to merged file")
+            else:
+                # Generate output filename
+                output_file = output_dir / f"{pdf_file.stem}_extracted.json"
+                
+                # Save to JSON
+                indent = 4 if args.pretty else None
+                json_output = json.dumps(parcel_data, indent=indent, ensure_ascii=False)
+                output_file.write_text(json_output, encoding="utf-8")
+                
+                # Track results
+                results[pdf_file.name] = {
+                    "status": "success",
+                    "output": str(output_file),
+                    "parcels": len(parcel_data) if isinstance(parcel_data, dict) else 0
+                }
+                
+                print(f"-> Saved to: {output_file}")
+            
+        except Exception as e:
+            print(f"Error processing {pdf_file.name}: {e}")
+            results[pdf_file.name] = {
+                "status": "error",
+                "error": str(e)
+            }
+    
+    # Summary
+    print(f"\n=== Batch Complete ===")
+    successful = sum(1 for r in results.values() if r.get("status") == "success")
+    failed = len(results) - successful
+    print(f"Total: {len(results)} | Success: {successful} | Failed: {failed}")
+    
+    # Save merged file if merge mode is on
+    if merge_mode and merged_data:
+        merge_file = output_dir / "all_parcels_merged.json"
+        indent = 4 if args.pretty else None
+        json_output = json.dumps(merged_data, indent=indent, ensure_ascii=False)
+        merge_file.write_text(json_output, encoding="utf-8")
+        print(f"Merged file saved to: {merge_file}")
+        print(f"Total parcels merged: {len(merged_data)}")
+    
+    # Save summary
+    summary_file = output_dir / "batch_summary.json"
+    summary_json = json.dumps(results, indent=2, ensure_ascii=False)
+    summary_file.write_text(summary_json, encoding="utf-8")
+    print(f"Summary saved to: {summary_file}")
+    summary_file.write_text(summary_json, encoding="utf-8")
+    print(f"Summary saved to: {summary_file}")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Extract architectural plan data to clean JSON"
@@ -323,6 +663,25 @@ def main():
         action="store_true",
         help="Extract ALL lots from multi-page PDF (returns dict with all lots)"
     )
+    parser.add_argument(
+        "-v", "--verbose",
+        action="store_true",
+        help="Show progress bar during extraction"
+    )
+    parser.add_argument(
+        "-b", "--batch",
+        action="store_true",
+        help="Batch mode: process multiple PDF files or a directory"
+    )
+    parser.add_argument(
+        "--merge",
+        action="store_true",
+        help="In batch mode: merge all results into a single JSON file"
+    )
+    parser.add_argument(
+        "--output-dir",
+        help="Output directory for batch mode (default: same as input)"
+    )
     
     args = parser.parse_args()
     
@@ -331,9 +690,14 @@ def main():
         print(f"Error: File not found: {args.pdf_path}", file=sys.stderr)
         sys.exit(1)
     
+    # Handle batch mode
+    if args.batch:
+        _handle_batch_mode(args)
+        return
+    
     try:
         # Extract data
-        parcel_data = extract_to_json(args.pdf_path, args.reference, args.all)
+        parcel_data = extract_to_json(args.pdf_path, args.reference, args.all, args.verbose)
         
         # Output JSON
         indent = 4 if args.pretty else None

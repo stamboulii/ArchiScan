@@ -408,6 +408,7 @@ class SuperExtractor:
                 # Single page lot
                 single = page_results[0]
                 single.reference = ref
+                single.parcel_label = ref  # Ensure consistency
                 if single.living_space > 0:
                     single.rooms = self.dedup.filter_by_reference(
                         single.rooms, ref, single.living_space
@@ -424,6 +425,8 @@ class SuperExtractor:
                     import copy
                     parent = copy.deepcopy(list(floor_split.values())[0])
                     parent.reference = ref
+                    # Also set parcel_label to ref for consistency in lookup
+                    parent.parcel_label = ref
                     parent.floor = "/".join(floor_split.keys())
                     parent.floor_results = list(floor_split.values())
                     # Use MAX of floor results (each floor's declared living space is the total for that floor)
@@ -440,6 +443,7 @@ class SuperExtractor:
                     # Same floor repeated (multiple views): combine into one
                     combined = self._combine_multi_floor_results(page_results)
                     combined.reference = ref
+                    combined.parcel_label = ref  # Ensure consistency
                     all_results[ref] = combined
                     logger.info(f"  🔗 '{ref}': {len(page_results)} vues → combiné")
 
@@ -835,7 +839,7 @@ class SuperExtractor:
             _lg_match = _re_pre.search(r'LOGEMENT\s+(\d+[,\.]\d+)', raw_pymupdf, _re_pre.IGNORECASE)
             if _lg_match:
                 declared_living = float(_lg_match.group(1).replace(',', '.'))
-            # Check for terrace
+            # Check for terrace (keyword-based detection)
             if 'Terrasse' in raw_pymupdf:
                 has_terrace = True
         

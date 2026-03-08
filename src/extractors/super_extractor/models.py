@@ -129,9 +129,11 @@ class ExtractionResult:
         )
         has_balcony = any(r.room_type == RoomType.BALCONY for r in self.rooms)
         has_terrace = any(r.room_type == RoomType.TERRACE for r in self.rooms)
+        has_loggia = any(r.room_type == RoomType.LOGGIA for r in self.rooms)
+        has_duplex = self.floor and ('duplex' in self.floor.lower() or 'R+' in self.floor and '+' in self.floor)
         
         # Fallback: detect terrace and balcony from raw text if not found in rooms
-        # Also check for exterior spaces like "Terrasse", "Balcon", "Jardin", "Exterieur"
+        # Also check for exterior spaces like "Terrasse", "Balcon", "Jardin", "Exterieur", "Loggia"
         if self.raw_text:
             raw_lower = self.raw_text.lower()
             # Check for terrace
@@ -140,13 +142,16 @@ class ExtractionResult:
             # Check for balcony (also check for "Balcon" without accent)
             if not has_balcony:
                 has_balcony = 'balcon' in raw_lower
+            # Check for loggia
+            if not has_loggia:
+                has_loggia = 'loggia' in raw_lower
             # Check for garden
             if not has_garden:
                 has_garden = 'jardin' in raw_lower or 'espaces verts' in raw_lower
             # Check for exterior (balcony/terrace indicator)
             if not has_balcony and not has_terrace:
-                has_balcony = 'exterieur' in raw_lower or 'ext\u00e9rieur' in raw_lower
-        has_loggia  = any(r.room_type == RoomType.LOGGIA  for r in self.rooms)
+                has_balcony = 'exterieur' in raw_lower or 'exterieur' in raw_lower
+        has_loggia = has_loggia or any(r.room_type == RoomType.LOGGIA for r in self.rooms)
         # Parking pur: type PARKING dont le nom normalisé NE contient PAS 'garage'
         has_parking = any(
             r.room_type == RoomType.PARKING and "garage" not in r.name_normalized.lower()
@@ -188,6 +193,7 @@ class ExtractionResult:
                     "terrace": has_terrace,
                     "garden": has_garden,
                     "loggia": has_loggia,
+                    "duplex": has_duplex,
                     "parking": has_parking,
                     "garage": has_garage,
                 },

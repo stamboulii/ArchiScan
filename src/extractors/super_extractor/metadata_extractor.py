@@ -224,6 +224,14 @@ class MetadataExtractor:
                 if variant_normalized in text_normalized:
                     reference = variant
                     break
+            
+            # If hint not found in text but looks valid (like "C71"), use it anyway
+            # This prevents pattern matching from extracting wrong value like "701"
+            if not reference and reference_hint:
+                # Check if hint looks like a valid reference (letter + digits)
+                hint_clean = reference_hint.replace('-', '').replace(' ', '')
+                if len(hint_clean) >= 2 and hint_clean[0].isalpha() and hint_clean[1:].isdigit():
+                    reference = reference_hint
         
         # If hint not found or not provided, use pattern matching
         if not reference:
@@ -242,11 +250,19 @@ class MetadataExtractor:
         
         # Combine building with unit number to avoid conflicts (e.g., "35" from building A, B, C all become unique)
         # This fixes the issue where same unit numbers from different buildings get grouped together
+        # But only do this if reference doesn't already start with a letter (e.g., it's just "71", not "C71")
         elif building and reference and reference.isdigit():
             # Clean building letter (take first character only)
             building_letter = building.strip()[0].upper() if building.strip() else ""
             if building_letter and building_letter.isalpha():
                 reference = f"{building_letter}{reference}"
+        
+        # Normalize reference: remove hyphens to ensure consistent keys (e.g., "C-03" -> "C03")
+        # Do this AFTER building combination to avoid conflicts
+        if reference:
+            reference = reference.replace('-', '').replace(' ', '')
+        if original_reference:
+            original_reference = original_reference.replace('-', '').replace(' ', '')
         
         return {
             "reference": reference,
